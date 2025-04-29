@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<title>SQL CREATE TABLE Görselleştirici</title>
+		<link rel="stylesheet" href="style.css">
+	</head>
+	<body>
+
+		<h1>SQL CREATE TABLE Görselleştirici</h1>
+		<textarea id="sqlInput" rows="20" cols="100" placeholder="Buraya CREATE TABLE sorgunu yapıştır..."></textarea><br>
+		<button onclick="visualize()">Görselleştir</button>
+
+		<div id="output"></div>
+		<svg id="connections">
+			<defs>
+				<marker id="arrow" markerwidth="10" markerheight="10" refx="10" refy="5" orient="auto" markerunits="strokeWidth">
+					<path d="M0,0 L10,5 L0,10 Z"/>
+				</marker>
+			</defs>
+		</svg>
+
+		<script src="script.js"></script>
+
+	</body>
+</html>
