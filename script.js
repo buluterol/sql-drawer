@@ -46,17 +46,39 @@ function makeDraggable(element) {
     element.addEventListener('mousedown', (e) => {
         offsetX = e.clientX - element.offsetLeft;
         offsetY = e.clientY - element.offsetTop;
+
         document.onmousemove = function (e) {
-            element.style.left = (e.clientX - offsetX) + 'px';
-            element.style.top = (e.clientY - offsetY) + 'px';
+            const output = document.getElementById('output');
+            const outputWrapper = document.getElementById('output-wrapper');
+
+            let newLeft = e.clientX - offsetX;
+            let newTop = e.clientY - offsetY;
+
+            element.style.left = newLeft + 'px';
+            element.style.top = newTop + 'px';
+
+            const buffer = 300; // yaklaşınca genişletelim
+
+            // Eğer sağ kenara yaklaşırsa genişlet
+            if (newLeft + element.offsetWidth + buffer > output.offsetWidth) {
+                output.style.minWidth = (output.offsetWidth + 1000) + 'px';
+            }
+
+            // Eğer alt kenara yaklaşırsa genişlet
+            if (newTop + element.offsetHeight + buffer > output.offsetHeight) {
+                output.style.minHeight = (output.offsetHeight + 1000) + 'px';
+            }
+
             drawConnections();
         };
+
         document.onmouseup = function () {
             document.onmousemove = null;
             document.onmouseup = null;
         };
     });
 }
+
 
 function visualize() {
     const sql = document.getElementById('sqlInput').value;
@@ -152,3 +174,42 @@ function drawConnections() {
         });
     });
 }
+
+
+
+let scale = 1;
+
+document.addEventListener('wheel', function (e) {
+    if (e.ctrlKey) {
+        e.preventDefault();
+        const wrapper = document.getElementById('output');
+
+        if (e.deltaY < 0) {
+            scale += 0.05; // Zoom in
+        } else {
+            scale -= 0.05; // Zoom out
+        }
+
+        scale = Math.min(Math.max(0.2, scale), 3); // Zoom aralığını sınırla
+
+        wrapper.style.transform = `scale(${scale})`;
+        wrapper.style.transformOrigin = '0 0'; // Sol üstten büyüsün
+    }
+}, { passive: false });
+
+
+
+document.getElementById('output-wrapper').addEventListener('scroll', function (e) {
+    const wrapper = e.target;
+    const output = document.getElementById('output');
+
+    const scrollBuffer = 50;
+
+    if (wrapper.scrollTop + wrapper.clientHeight >= wrapper.scrollHeight - scrollBuffer) {
+        output.style.minHeight = (output.offsetHeight + 100) + 'px';
+    }
+
+    if (wrapper.scrollLeft + wrapper.clientWidth >= wrapper.scrollWidth - scrollBuffer) {
+        output.style.minWidth = (output.offsetWidth + 100) + 'px';
+    }
+});
