@@ -40,31 +40,34 @@ function parseCreateTable(sql) {
 
     return results;
 }
-
 function makeDraggable(element) {
-    let offsetX, offsetY;
+    let startX, startY, startLeft, startTop;
+
     element.addEventListener('mousedown', (e) => {
-        offsetX = e.clientX - element.offsetLeft;
-        offsetY = e.clientY - element.offsetTop;
+        startX = e.clientX;
+        startY = e.clientY;
+
+        // Doğrudan elementin kendi offsetLeft ve offsetTop'unu al (scale uygulanmamış)
+        startLeft = parseFloat(element.style.left) || 0;
+        startTop = parseFloat(element.style.top) || 0;
 
         document.onmousemove = function (e) {
-            const output = document.getElementById('output');
-            const outputWrapper = document.getElementById('output-wrapper');
+            const dx = (e.clientX - startX) / scale;
+            const dy = (e.clientY - startY) / scale;
 
-            let newLeft = e.clientX - offsetX;
-            let newTop = e.clientY - offsetY;
+            let newLeft = startLeft + dx;
+            let newTop = startTop + dy;
 
             element.style.left = newLeft + 'px';
             element.style.top = newTop + 'px';
 
-            const buffer = 300; // yaklaşınca genişletelim
+            const buffer = 300;
+            const output = document.getElementById('output');
 
-            // Eğer sağ kenara yaklaşırsa genişlet
             if (newLeft + element.offsetWidth + buffer > output.offsetWidth) {
                 output.style.minWidth = (output.offsetWidth + 1000) + 'px';
             }
 
-            // Eğer alt kenara yaklaşırsa genişlet
             if (newTop + element.offsetHeight + buffer > output.offsetHeight) {
                 output.style.minHeight = (output.offsetHeight + 1000) + 'px';
             }
@@ -78,6 +81,8 @@ function makeDraggable(element) {
         };
     });
 }
+
+
 
 
 function visualize() {
@@ -95,10 +100,22 @@ function visualize() {
             return;
         }
 
+        const tableWidth = 220;
+        const tableHeight = 150;
+        const padding = 50;
+        const canvasWidth = 3000; // maksimum genişlik
+
+        const maxPerRow = Math.floor((canvasWidth - padding) / (tableWidth + padding));
+        const row = Math.floor(index / maxPerRow);
+        const col = index % maxPerRow;
+
+        const left = padding + col * (tableWidth + padding);
+        const top = padding + row * (tableHeight + padding);
+
         const div = document.createElement('div');
         div.className = 'table-box';
-        div.style.left = (50 + Object.keys(tables).length * 250) + 'px';
-        div.style.top = '50px';
+        div.style.left = `${left}px`;
+        div.style.top = `${top}px`;
         div.id = 'table-' + table.tableName;
 
         const title = document.createElement('div');
@@ -114,13 +131,12 @@ function visualize() {
             div.appendChild(colDiv);
         });
 
-        output.appendChild(div);
+        document.getElementById('canvas').appendChild(div);
         tables[table.tableName] = div;
-
         window.parsedTables.push(table);
-
         makeDraggable(div);
     });
+
 
     drawConnections();
 }
@@ -192,8 +208,8 @@ document.addEventListener('wheel', function (e) {
 
         scale = Math.min(Math.max(0.2, scale), 3); // Zoom aralığını sınırla
 
-        wrapper.style.transform = `scale(${scale})`;
-        wrapper.style.transformOrigin = '0 0'; // Sol üstten büyüsün
+        wrapper.style.zoom = scale; // CSS zoom kullanımı
+        drawConnections(); // Bağlantıları yeniden çiz
     }
 }, { passive: false });
 
@@ -212,4 +228,6 @@ document.getElementById('output-wrapper').addEventListener('scroll', function (e
     if (wrapper.scrollLeft + wrapper.clientWidth >= wrapper.scrollWidth - scrollBuffer) {
         output.style.minWidth = (output.offsetWidth + 100) + 'px';
     }
+
+    drawConnections(); // Bağlantıları yeniden çiz
 });
