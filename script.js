@@ -1,5 +1,5 @@
 let tables = {};
-
+// asdasd
 function parseCreateTable(sql) {
     const createTableRegex = /CREATE TABLE [`"]?(\w+)[`"]? \((.*?)\) ENGINE=/gis;
     const foreignKeyRegex = /CONSTRAINT [`"]?(\w+)[`"]? FOREIGN KEY \([`"]?(\w+)[`"]?\) REFERENCES [`"]?(\w+)[`"]? \([`"]?(\w+)[`"]?\)/gi;
