@@ -10,12 +10,18 @@
 	</head>
 	<body>
 
-
 		<div class="sidebar">
 			<button type="button" class="btn btn-link mb-3" data-bs-toggle="modal" data-bs-target="#sqlModal">
 				<i class="fa-solid fa-database"></i>
 			</button>
-		</diV>
+		</div>
+
+		<!-- Dark Mode Toggle - Sağ Üst -->
+		<div class="dark-mode-container">
+			<button type="button" class="dark-mode-btn" id="dark-mode-toggle" title="Dark Mode">
+				<i class="fa-solid fa-moon"></i>
+			</button>
+		</div>
 
 		<div class="modal fade" id="sqlModal" tabindex="-1" aria-labelledby="sqlModalLabel" aria-hidden="true">
 			<div class="modal-dialog modal-lg">
@@ -40,6 +46,22 @@
 				<div id="canvas"></div>
 			</div>
 		</div>
+
+		<!-- Zoom Controls -->
+		<div class="zoom-controls">
+			<button id="zoom-in" class="zoom-btn" title="Zoom In">
+				<i class="fa-solid fa-plus"></i>
+			</button>
+			<button id="zoom-out" class="zoom-btn" title="Zoom Out">
+				<i class="fa-solid fa-minus"></i>
+			</button>
+			<button id="zoom-reset" class="zoom-btn" title="Reset Zoom">
+				<i class="fa-solid fa-house"></i>
+			</button>
+			<input type="range" id="zoom-range" class="zoom-range" min="10" max="300" step="10" value="100" title="Zoom Slider">
+			<div class="zoom-level" id="zoom-level">100%</div>
+		</div>
+
 		<svg id="connections">
 			<defs>
 				<marker id="arrow" markerwidth="10" markerheight="10" refx="10" refy="5" orient="auto" markerunits="strokeWidth">
