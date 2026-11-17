@@ -691,20 +691,54 @@ function autoFitZoom() {
 
     // Zoom'u uygula
     currentZoom = targetZoom;
-    applyZoom();    // İçeriği merkeze getir
-    setTimeout(() => {
-        const newContentWidth = contentWidth * targetZoom;
-        const newContentHeight = contentHeight * targetZoom;
-        const newMinX = minX * targetZoom;
-        const newMinY = minY * targetZoom;
+    applyZoom();
 
-        // Merkez hesaplama
-        const scrollX = newMinX - (viewportWidth - newContentWidth) / 2;
-        const scrollY = newMinY - (viewportHeight - newContentHeight) / 2;
+    // Yüzen kontrollerin (sol panel, sağ zoom düğmeleri) altında kalmasın
+    const insetL = Math.min(170, viewportWidth * 0.1), insetR = Math.min(130, viewportWidth * 0.08), insetV = 30;
+    const availW = viewportWidth - insetL - insetR;
+    const availH = viewportHeight - insetV * 2;
 
-        outputWrapper.scrollLeft = Math.max(0, scrollX);
-        outputWrapper.scrollTop = Math.max(0, scrollY);
-    }, 50);
+    // CSS zoom küçük ölçeklerde öğe yüksekliğini/yazı boyutunu değiştirdiği için hesap tutmayabilir:
+    // gerçek ekran ölçüsüne bakıp tüm tablolar sığana kadar küçült
+    const measure = () => {
+        let l = Infinity, t = Infinity, r = -Infinity, bt = -Infinity;
+        tableElements.forEach(el => {
+            const rc = el.getBoundingClientRect();
+            l = Math.min(l, rc.left); t = Math.min(t, rc.top);
+            r = Math.max(r, rc.right); bt = Math.max(bt, rc.bottom);
+        });
+        return { l, t, r, b: bt, w: r - l, h: bt - t };
+    };
+    outputWrapper.scrollLeft = 0;
+    outputWrapper.scrollTop = 0;
+    let m = measure();
+    for (let i = 0; i < 12 && currentZoom > minZoom && (m.w > availW || m.h > availH); i++) {
+        const k = Math.min(availW / m.w, availH / m.h);
+        currentZoom = Math.max(minZoom, Math.floor(currentZoom * k * 100) / 100);
+        applyZoom();
+        outputWrapper.scrollLeft = 0;
+        outputWrapper.scrollTop = 0;
+        m = measure();
+    }
+
+    // İçeriği boş alanın ortasına al: tabloları (zoom'suz birimle) kaydır, kaydırma 0'da kalsın
+    const wr = outputWrapper.getBoundingClientRect();
+    const wantL = wr.left + insetL + (availW - m.w) / 2;
+    const wantT = wr.top + insetV + (availH - m.h) / 2;
+    let dx = (wantL - m.l) / currentZoom;
+    let dy = (wantT - m.t) / currentZoom;
+    let curMinX = Infinity, curMinY = Infinity;
+    tableElements.forEach(el => {
+        curMinX = Math.min(curMinX, parseFloat(el.style.left) || 0);
+        curMinY = Math.min(curMinY, parseFloat(el.style.top) || 0);
+    });
+    dx = Math.max(dx, -curMinX);
+    dy = Math.max(dy, -curMinY);
+    tableElements.forEach(el => {
+        el.style.left = ((parseFloat(el.style.left) || 0) + dx) + 'px';
+        el.style.top = ((parseFloat(el.style.top) || 0) + dy) + 'px';
+    });
+    drawConnections();
 }
 
 // Zoom değerini 10'un katlarına yuvarla
