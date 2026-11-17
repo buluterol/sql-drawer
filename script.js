@@ -152,6 +152,13 @@ function makeDraggable(element) {
         // Right click kontrolü
         if (e.button === 2) return;
 
+        // Shift/Ctrl/Cmd+tık: tabloyu seçime ekle/çıkar (sürükleme yok)
+        if (e.shiftKey || e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            toggleTableSelection(element.id.replace('table-', ''));
+            return;
+        }
+
         isDragging = true;
         startX = e.clientX;
         startY = e.clientY;
@@ -763,6 +770,11 @@ function drawConnections() {
 
 
 
+// Boş alana tıklayınca tablo seçimini temizle
+document.getElementById('output-wrapper').addEventListener('mousedown', function (e) {
+    if (e.button === 0 && !e.target.closest('.table-box')) clearTableSelection();
+});
+
 document.getElementById('output-wrapper').addEventListener('scroll', function (e) {
     const wrapper = e.target;
     const output = document.getElementById('output');
@@ -830,106 +842,234 @@ function highlightTable(tableName) {
     drawConnections();
 }
 
-// Tabloyu SQL olarak export eden fonksiyon
+// ---- Metin çıktıları (SQL DDL / Markdown) ----
+
+function qid(name) {
+    return '`' + name + '`';
+}
+
+// Aynı CONSTRAINT adını paylaşan (bileşik) FK kayıtlarını tek FK'da toplar
+function groupForeignKeys(table) {
+    const groups = [];
+    table.foreignKeys.forEach(fk => {
+        const existing = fk.name && groups.find(g => g.name === fk.name && g.referencesTable === fk.referencesTable);
+        if (existing) {
+            existing.columns.push(fk.column);
+            existing.referencesColumns.push(fk.referencesColumn);
+        } else {
+            groups.push({
+                name: fk.name || null,
+                columns: [fk.column],
+                referencesTable: fk.referencesTable,
+                referencesColumns: [fk.referencesColumn]
+            });
+        }
+    });
+    groups.forEach(g => {
+        if (!g.name) g.name = `fk_${table.tableName}_${g.columns.join('_')}`;
+    });
+    return groups;
+}
+
+function fkClause(g) {
+    return `CONSTRAINT ${qid(g.name)} FOREIGN KEY (${g.columns.map(qid).join(', ')}) ` +
+        `REFERENCES ${qid(g.referencesTable)} (${g.referencesColumns.map(qid).join(', ')})`;
+}
+
+// Seçili (veya tüm) tablolar için CREATE TABLE çıktısı üretir.
+// Bağımlılık sırasına dizer; döngüsel FK'lar sonda ALTER TABLE ile eklenir.
+function generateDDL(names) {
+    const wanted = new Set(names);
+    const list = window.parsedTables.filter(t => wanted.has(t.tableName));
+    const groups = {};
+    list.forEach(t => { groups[t.tableName] = groupForeignKeys(t); });
+
+    // Topolojik sıralama (yalnızca çıktıdaki tablolar arasında, kendine referans hariç)
+    const ordered = [];
+    const state = {};
+    const deferred = new Set(); // "tablo|fkAdı" -> ALTER ile eklenecek
+    const byName = Object.fromEntries(list.map(t => [t.tableName, t]));
+    function visit(t, stack) {
+        if (state[t.tableName] === 2) return;
+        state[t.tableName] = 1;
+        stack.push(t.tableName);
+        groups[t.tableName].forEach(g => {
+            const dep = byName[g.referencesTable];
+            if (!dep || dep === t) return;
+            if (state[dep.tableName] === 1) {
+                deferred.add(t.tableName + '|' + g.name); // döngü: bu FK sonra eklenir
+            } else {
+                visit(dep, stack);
+            }
+        });
+        stack.pop();
+        state[t.tableName] = 2;
+        ordered.push(t);
+    }
+    list.forEach(t => visit(t, []));
+
+    const createStatements = ordered.map(t => {
+        const lines = t.columns.map(c => `  ${qid(c.name)} ${c.type}`.trimEnd());
+        const pks = t.columns.filter(c => c.pk).map(c => qid(c.name));
+        if (pks.length) lines.push(`  PRIMARY KEY (${pks.join(', ')})`);
+        groups[t.tableName].forEach(g => {
+            if (!deferred.has(t.tableName + '|' + g.name)) lines.push('  ' + fkClause(g));
+        });
+        return `CREATE TABLE ${qid(t.tableName)} (\n${lines.join(',\n')}\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`;
+    });
+
+    const alters = [];
+    ordered.forEach(t => {
+        groups[t.tableName].forEach(g => {
+            if (deferred.has(t.tableName + '|' + g.name)) {
+                alters.push(`ALTER TABLE ${qid(t.tableName)} ADD ${fkClause(g)};`);
+            }
+        });
+    });
+
+    return createStatements.concat(alters).join('\n\n') + '\n';
+}
+
+// Markdown: her tablo için Sütun | Tür | Anahtar | Referans tablosu
+function generateMarkdown(names) {
+    const wanted = new Set(names);
+    return window.parsedTables.filter(t => wanted.has(t.tableName)).map(t => {
+        const rows = t.columns.map(c => {
+            const keys = [];
+            if (c.pk) keys.push('PK');
+            const fks = t.foreignKeys.filter(f => f.column === c.name);
+            if (fks.length) keys.push('FK');
+            const ref = fks.map(f => `${f.referencesTable}.${f.referencesColumn}`).join(', ');
+            const esc = v => String(v).replace(/\|/g, '\\|');
+            return `| ${esc(c.name)} | ${esc(c.type)} | ${keys.join(', ')} | ${esc(ref)} |`;
+        });
+        return `### ${t.tableName}\n\n| Column | Type | Key | References |\n| --- | --- | --- | --- |\n${rows.join('\n')}\n`;
+    }).join('\n');
+}
+
+function getSelectedTableNames() {
+    return Object.keys(tables).filter(n => tables[n].classList.contains('selected'));
+}
+
+function toggleTableSelection(tableName) {
+    tables[tableName].classList.toggle('selected');
+}
+
+function clearTableSelection() {
+    Object.values(tables).forEach(el => el.classList.remove('selected'));
+}
+
+// Tek tabloyu dışa aktarır (bağlam menüsü): seçili tablolar varsa ve bu tablo onlardan biriyse hepsini içerir
 function exportTableAsSQL(tableName) {
-    const table = window.parsedTables.find(t => t.tableName === tableName);
-    if (!table) {
-        alert('Tablo bulunamadı!');
+    const selected = getSelectedTableNames();
+    showExportPopup(selected.includes(tableName) ? selected : [tableName]);
+}
+
+// Dışa aktarma penceresi: kapsam (seçili/tümü), biçim (SQL/Markdown), kopyala, indir
+function showExportPopup(initialNames) {
+    hideExportPopup();
+    if (!window.parsedTables || !window.parsedTables.length) {
+        alert('Önce bir şema yükleyin.');
         return;
     }
 
-    let sql = `CREATE TABLE \`${table.tableName}\` (\n`;
+    const allNames = window.parsedTables.map(t => t.tableName);
+    const selected = initialNames || getSelectedTableNames();
+    let scope = selected.length ? 'selected' : 'all';
+    let format = 'sql';
+    let scopeNames = selected;
 
-    // Sütunları ekle
-    const columnDefinitions = table.columns.map(col => {
-        return `  \`${col.name}\` ${col.type}`;
-    });
-
-    sql += columnDefinitions.join(',\n');
-
-    // Foreign key'leri ekle
-    if (table.foreignKeys && table.foreignKeys.length > 0) {
-        sql += ',\n';
-        const foreignKeyDefinitions = table.foreignKeys.map(fk => {
-            return `  CONSTRAINT \`fk_${table.tableName}_${fk.column}\` FOREIGN KEY (\`${fk.column}\`) REFERENCES \`${fk.referencesTable}\` (\`${fk.referencesColumn}\`)`;
-        });
-        sql += foreignKeyDefinitions.join(',\n');
-    }
-
-    sql += '\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;';
-
-    // Popup göster
-    showExportPopup(tableName, sql);
-}
-
-// Export popup'ını gösteren fonksiyon
-function showExportPopup(tableName, sqlContent) {
-    // Mevcut popup'ı kaldır
-    const existingPopup = document.getElementById('export-popup');
-    if (existingPopup) {
-        existingPopup.remove();
-    }
-
-    // Popup container
     const popup = document.createElement('div');
     popup.id = 'export-popup';
     popup.className = 'export-popup';
+    popup.innerHTML = `
+        <div class="export-popup-content">
+            <div class="export-popup-header">
+                <h3>📤 Dışa Aktar</h3>
+                <button class="export-close-btn" type="button">×</button>
+            </div>
+            <div class="export-options">
+                <label>Kapsam
+                    <select id="export-scope">
+                        <option value="selected">Seçili tablolar</option>
+                        <option value="all">Tüm şema</option>
+                    </select>
+                </label>
+                <label>Biçim
+                    <select id="export-format">
+                        <option value="sql">SQL (CREATE TABLE)</option>
+                        <option value="md">Markdown</option>
+                    </select>
+                </label>
+                <span class="export-count"></span>
+            </div>
+            <textarea class="export-sql-textarea" readonly></textarea>
+            <div class="export-popup-buttons"></div>
+        </div>`;
 
-    // Popup content
-    const content = document.createElement('div');
-    content.className = 'export-popup-content';
+    const scopeSel = popup.querySelector('#export-scope');
+    const formatSel = popup.querySelector('#export-format');
+    const textarea = popup.querySelector('textarea');
+    const count = popup.querySelector('.export-count');
+    const buttons = popup.querySelector('.export-popup-buttons');
 
-    // Header
-    const header = document.createElement('div');
-    header.className = 'export-popup-header';
-    header.innerHTML = `
-        <h3>📤 SQL Export - ${tableName}</h3>
-        <button class="export-close-btn" onclick="hideExportPopup()">×</button>
-    `;
+    if (!selected.length) scopeSel.querySelector('[value="selected"]').disabled = true;
+    scopeSel.value = scope;
 
-    // SQL Content
-    const sqlTextarea = document.createElement('textarea');
-    sqlTextarea.className = 'export-sql-textarea';
-    sqlTextarea.value = sqlContent;
-    sqlTextarea.readOnly = true;
+    const render = () => {
+        scope = scopeSel.value;
+        format = formatSel.value;
+        const names = scope === 'all' ? allNames : scopeNames;
+        count.textContent = `${names.length} tablo`;
+        textarea.value = format === 'sql' ? generateDDL(names) : generateMarkdown(names);
+    };
+    scopeSel.onchange = formatSel.onchange = render;
+    render();
 
-    // Buttons
-    const buttonContainer = document.createElement('div');
-    buttonContainer.className = 'export-popup-buttons';
-
-    const copyButton = document.createElement('button');
-    copyButton.className = 'export-btn export-btn-primary';
-    copyButton.textContent = '📋 Kopyala';
-    copyButton.onclick = () => {
-        sqlTextarea.select();
-        document.execCommand('copy');
-        copyButton.textContent = '✅ Kopyalandı!';
-        setTimeout(() => {
-            copyButton.textContent = '📋 Kopyala';
-        }, 2000);
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'export-btn export-btn-primary';
+    copyBtn.textContent = '📋 Kopyala';
+    copyBtn.onclick = () => {
+        const done = () => {
+            copyBtn.textContent = '✅ Kopyalandı!';
+            setTimeout(() => { copyBtn.textContent = '📋 Kopyala'; }, 2000);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(textarea.value).then(done, () => {
+                textarea.select();
+                document.execCommand('copy');
+                done();
+            });
+        } else {
+            textarea.select();
+            document.execCommand('copy');
+            done();
+        }
     };
 
-    const closeButton = document.createElement('button');
-    closeButton.className = 'export-btn export-btn-secondary';
-    closeButton.textContent = 'Kapat';
-    closeButton.onclick = hideExportPopup;
+    const downloadBtn = document.createElement('button');
+    downloadBtn.className = 'export-btn export-btn-primary';
+    downloadBtn.textContent = '💾 İndir';
+    downloadBtn.onclick = () => {
+        const isSql = formatSel.value === 'sql';
+        const blob = new Blob([textarea.value], { type: 'text/plain;charset=utf-8' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'schema.' + (isSql ? 'sql' : 'md');
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    };
 
-    buttonContainer.appendChild(copyButton);
-    buttonContainer.appendChild(closeButton);
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'export-btn export-btn-secondary';
+    closeBtn.textContent = 'Kapat';
+    closeBtn.onclick = hideExportPopup;
 
-    // Popup'ı birleştir
-    content.appendChild(header);
-    content.appendChild(sqlTextarea);
-    content.appendChild(buttonContainer);
-    popup.appendChild(content);
-
-    // Sayfaya ekle
+    buttons.append(copyBtn, downloadBtn, closeBtn);
+    popup.querySelector('.export-close-btn').onclick = hideExportPopup;
     document.body.appendChild(popup);
-
-    // Textarea'yı seç
-    setTimeout(() => {
-        sqlTextarea.select();
-    }, 100);
 }
 
 // Export popup'ını gizleyen fonksiyon

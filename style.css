@@ -739,3 +739,38 @@ html {
     background: var(--column-bg);
     color: var(--text-color);
 }
+
+/* Tablo seçimi */
+.table-box.selected {
+    border-color: #3498db;
+    box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.45), 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* Dışa aktarma seçenekleri */
+.export-options {
+    display: flex;
+    align-items: flex-end;
+    gap: 14px;
+    padding: 12px 20px 0;
+    color: var(--text-color);
+    font-size: 13px;
+}
+
+.export-options label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.export-options select {
+    padding: 6px 8px;
+    border: 1px solid var(--column-border);
+    border-radius: 6px;
+    background: var(--column-bg);
+    color: var(--text-color);
+}
+
+.export-count {
+    margin-left: auto;
+    opacity: 0.7;
+}
