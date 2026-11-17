@@ -10,14 +10,35 @@
 	</head>
 	<body>
 
-		<div class="sidebar">
-			<button type="button" class="btn btn-link mb-3" data-bs-toggle="modal" data-bs-target="#sqlModal">
-				<i class="fa-solid fa-database"></i>
-			</button>
-			<button type="button" class="btn btn-link mb-3" id="export-btn" title="SQL / Markdown dışa aktar (Shift/Ctrl+tık ile tablo seç)" onclick="showExportPopup()">
-				<i class="fa-solid fa-file-export"></i>
-			</button>
-		</div>
+			<div class="sidebar toolbar" id="toolbar">
+				<div class="tool-group">
+					<button type="button" class="tool-btn" data-bs-toggle="modal" data-bs-target="#sqlModal" data-tip="SQL içe aktar"><i class="fa-solid fa-database"></i></button>
+					<button type="button" class="tool-btn" id="export-btn" data-tip="SQL / Markdown dışa aktar" onclick="showExportPopup()"><i class="fa-solid fa-file-export"></i></button>
+				</div>
+				<div class="tool-sep"></div>
+				<div class="tool-group">
+					<button type="button" class="tool-btn" id="history-btn" data-tip="Değişiklik geçmişi" onclick="toggleHistoryPanel()"><i class="fa-solid fa-clock-rotate-left"></i><span id="history-count" class="tool-badge"></span></button>
+					<button type="button" class="tool-btn" id="clear-marks-btn" data-tip="İşaretleri temizle" onclick="clearMarks()"><i class="fa-solid fa-eraser"></i></button>
+				</div>
+				<div class="tool-sep"></div>
+				<div class="tool-group">
+					<button type="button" class="tool-btn" id="json-save-btn" data-tip="Yerleşim + geçmiş: JSON kaydet" onclick="exportStateJSON()"><i class="fa-solid fa-floppy-disk"></i></button>
+					<button type="button" class="tool-btn" id="json-open-btn" data-tip="JSON aç" onclick="document.getElementById('json-file').click()"><i class="fa-solid fa-folder-open"></i></button>
+					<input type="file" id="json-file" accept="application/json,.json" hidden>
+				</div>
+			</div>
+
+			<div id="history-panel">
+				<div class="hist-top">
+					<strong>Değişiklik geçmişi</strong>
+					<button type="button" id="hist-close" class="hist-x" title="Kapat">&times;</button>
+				</div>
+				<div class="hist-actions">
+					<button type="button" id="hist-clear" class="btn btn-sm btn-outline-secondary">İşaretleri temizle</button>
+					<button type="button" id="hist-remove" class="btn btn-sm btn-outline-danger">Silinenleri kaldır</button>
+				</div>
+				<div class="hist-list"></div>
+			</div>
 
 		<!-- Dark Mode Toggle - Sağ Üst -->
 		<div class="dark-mode-container">
@@ -37,6 +58,7 @@
 						<textarea id="sqlInput" class="form-control" rows="20" placeholder="Buraya CREATE TABLE sorgunu yapıştır..."></textarea>
 					</div>
 					<div class="modal-footer">
+							<label class="me-auto small"><input type="checkbox" id="markMissing" checked> Eksik tabloları silinmiş say</label>
 						<button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Kapat</button>
 						<button type="button" class="btn btn-primary" onclick="visualize()">Görselleştir</button>
 					</div>

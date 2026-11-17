@@ -283,6 +283,7 @@ function makeDraggable(element) {
                 if (focusedTable === name) clearHighlight(); else focusTable(name);
             } else {
                 drawConnections();
+                saveState();
             }
         };
     });
@@ -499,6 +500,10 @@ function buildColumnElement(table, col) {
     colDiv.className = 'column';
     colDiv.id = `${table.tableName}-${col.name}`;
     colDiv.dataset.column = col.name;
+    if (col._diff) {
+        colDiv.classList.add('diff-' + col._diff.kind);
+        if (col._diff.note) colDiv.title = col._diff.note;
+    }
 
     const fk = table.foreignKeys.find(f => f.column === col.name);
     if (col.pk) {
@@ -519,119 +524,395 @@ function buildColumnElement(table, col) {
     return colDiv;
 }
 
+// Tablo başlığındaki işaret rozeti ve kutu sınıfı (yeni / değişti / silindi)
+const DIFF_LABELS = { added: 'YENİ', changed: 'DEĞİŞTİ', removed: 'SİLİNDİ' };
+function applyTableMarks(table) {
+    const div = tables[table.tableName];
+    if (!div) return;
+    ['added', 'changed', 'removed'].forEach(k => div.classList.toggle('diff-' + k, table.diff === k));
+    const title = div.querySelector('.table-name');
+    let badge = title.querySelector('.diff-badge');
+    if (!table.diff) { if (badge) badge.remove(); return; }
+    if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'diff-badge';
+        title.appendChild(badge);
+    }
+    badge.textContent = DIFF_LABELS[table.diff];
+}
+
 // Bir tablonun sütunlarını modelden yeniden çizer (PK/FK değişince)
 function refreshTableColumns(table) {
     const div = tables[table.tableName];
     if (!div) return;
     div.querySelectorAll('.column').forEach(el => el.remove());
     table.columns.forEach(col => div.appendChild(buildColumnElement(table, col)));
+    applyTableMarks(table);
+}
+
+// Modelden tablo kutusu oluşturur (import, geri yükleme ve manuel ekleme ortak kullanır)
+function createTableElement(table, x, y) {
+    const div = document.createElement('div');
+    div.className = 'table-box';
+    div.style.left = (x || 0) + 'px';
+    div.style.top = (y || 0) + 'px';
+    div.id = 'table-' + table.tableName;
+
+    const title = document.createElement('div');
+    title.className = 'table-name';
+    const label = document.createElement('span');
+    label.className = 'table-name-text';
+    label.textContent = table.tableName;
+    title.appendChild(label);
+    div.appendChild(title);
+
+    document.getElementById('canvas').appendChild(div);
+    tables[table.tableName] = div;
+    table.columns.forEach(col => div.appendChild(buildColumnElement(table, col)));
+    makeDraggable(div);
+    applyTableMarks(table);
+    return div;
+}
+
+// ---- Şema farkı (diff) ----
+const normType = (t) => String(t || '').replace(/\s+/g, ' ').trim().toLowerCase();
+function fkSig(t, colName) {
+    const f = t.foreignKeys.find(x => x.column === colName);
+    return f ? `${f.referencesTable}.${f.referencesColumn}` : '';
+}
+
+// Eski ve yeni tablo tanımını karşılaştırır: sütun işaretleri + açıklama satırları
+function compareTable(o, n) {
+    const items = [];
+    const marks = {}; // sütun adı -> {kind, note}
+    n.columns.forEach(nc => {
+        const oc = o.columns.find(c => c.name === nc.name);
+        if (!oc) {
+            marks[nc.name] = { kind: 'added', note: 'Yeni sütun' };
+            items.push({ k: 'add', t: `+ ${nc.name} (${nc.type})` });
+            return;
+        }
+        const notes = [];
+        if (normType(oc.type) !== normType(nc.type)) notes.push(`tip: ${oc.type} → ${nc.type}`);
+        if (!!oc.pk !== !!nc.pk) notes.push(nc.pk ? 'PK eklendi' : 'PK kaldırıldı');
+        const fo = fkSig(o, nc.name), fn = fkSig(n, nc.name);
+        if (fo !== fn) notes.push(!fo ? `FK eklendi → ${fn}` : !fn ? 'FK kaldırıldı' : `FK: ${fo} → ${fn}`);
+        if (notes.length) {
+            marks[nc.name] = { kind: 'changed', note: notes.join('; ') };
+            items.push({ k: 'chg', t: `~ ${nc.name}: ${notes.join('; ')}` });
+        }
+    });
+    o.columns.forEach(oc => {
+        if (!n.columns.some(c => c.name === oc.name)) {
+            marks[oc.name] = { kind: 'removed', note: 'Silinen sütun', ghost: oc };
+            items.push({ k: 'del', t: `− ${oc.name} (${oc.type})` });
+        }
+    });
+    return { items, marks };
+}
+
+function clone(o) { return JSON.parse(JSON.stringify(o)); }
+
+// Silinmiş işaretli tabloları/sütunları kalıcı olarak kaldırır
+function finalizeRemovals() {
+    (window.parsedTables || []).slice().forEach(t => {
+        if (t.diff === 'removed') removeTableFromModel(t.tableName);
+        else t.columns = t.columns.filter(c => !(c._diff && c._diff.kind === 'removed'));
+    });
+}
+
+function removeTableFromModel(name) {
+    const el = tables[name];
+    if (el) el.remove();
+    delete tables[name];
+    window.parsedTables = window.parsedTables.filter(t => t.tableName !== name);
+    // Bu tabloya işaret eden FK'ler de düşer
+    window.parsedTables.forEach(t => {
+        t.foreignKeys = t.foreignKeys.filter(f => f.referencesTable !== name);
+    });
+    if (focusedTable === name) focusedTable = null;
+}
+
+function clearMarks() {
+    (window.parsedTables || []).forEach(t => {
+        if (t.diff !== 'removed') delete t.diff;
+        t.columns.forEach(c => { if (!(c._diff && c._diff.kind === 'removed')) delete c._diff; });
+        refreshTableColumns(t);
+    });
+    updateUnrelatedState();
+    drawConnections();
+    saveState();
+    renderHistory();
+}
+
+function pendingRemovalCount() {
+    return (window.parsedTables || []).filter(t => t.diff === 'removed').length;
+}
+
+// Silinmiş işaretli tabloları ve sütunları onayla ve kaldır
+function confirmRemovals() {
+    finalizeRemovals();
+    (window.parsedTables || []).forEach(refreshTableColumns);
+    updateUnrelatedState();
+    drawConnections();
+    saveState();
+    renderHistory();
+}
+
+// ---- Yerleşim: yeni tabloyu ilişkili olduğu tablonun yanına, çakışmasız yerleştir ----
+function freeSpotNear(el, anchors, others, gap) {
+    const w = el.offsetWidth, h = el.offsetHeight;
+    const hits = (x, y) => others.some(o => x < o.x + o.w + gap && o.x < x + w + gap && y < o.y + o.h + gap && o.y < y + h + gap);
+    const cands = [];
+    anchors.forEach(a => {
+        for (let ring = 0; ring < 6; ring++) {
+            const d = gap + ring * (gap + 40);
+            cands.push([a.x + a.w + d, a.y], [a.x + a.w + d, a.y + a.h + d], [a.x - w - d, a.y],
+                [a.x, a.y + a.h + d], [a.x, a.y - h - d], [a.x - w - d, a.y + a.h + d]);
+        }
+    });
+    for (const [x, y] of cands) {
+        if (x >= 0 && y >= 0 && !hits(x, y)) return { x, y };
+    }
+    // Yer bulunamazsa her şeyin sağına
+    const right = Math.max(0, ...others.map(o => o.x + o.w));
+    const top = others.length ? Math.min(...others.map(o => o.y)) : 100;
+    return { x: right + LAYOUT_COMP_GAP, y: top };
+}
+
+function rectOf(name) {
+    const el = tables[name];
+    return { name, x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight };
+}
+
+// ---- Sürüm geçmişi ----
+window.history_ = window.history_ || [];
+function recordVersion(source, change) {
+    const v = {
+        id: Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+        ts: new Date().toISOString(),
+        source,
+        added: change.added,       // [{table, cols}]
+        removed: change.removed,   // [{table, cols}]
+        changed: change.changed    // [{table, items:[{k,t}]}]
+    };
+    window.history_.unshift(v);
+    if (window.history_.length > 200) window.history_.length = 200;
+    return v;
+}
+
+function showToast(msg) {
+    let t = document.getElementById('toast');
+    if (!t) {
+        t = document.createElement('div');
+        t.id = 'toast';
+        document.body.appendChild(t);
+    }
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(() => t.classList.remove('show'), 3500);
 }
 
 function visualize() {
     const sql = document.getElementById('sqlInput').value;
-    const parsedTables = parseCreateTable(sql);
-    const output = document.getElementById('output');
-    const svg = document.getElementById('connections');
+    const parsed = parseCreateTable(sql);
+    const markMissingEl = document.getElementById('markMissing');
+    const markMissing = !markMissingEl || markMissingEl.checked;
 
-    if (!window.parsedTables) {
-        window.parsedTables = [];
+    if (!window.parsedTables) window.parsedTables = [];
+    if (parsed.length === 0) { showToast('SQL içinde CREATE TABLE bulunamadı'); return; }
+
+    const fresh = window.parsedTables.length === 0;
+
+    // Önceki içe aktarmadan kalan "silindi" işaretleri bu import ile kesinleşir; işaretler sıfırlanır
+    if (!fresh) {
+        finalizeRemovals();
+        window.parsedTables.forEach(t => {
+            delete t.diff;
+            t.columns.forEach(c => delete c._diff);
+        });
     }
 
-    // Yeni tabloları filtreleme
-    const newTables = parsedTables.filter(table => !tables[table.tableName]);
+    const oldBy = Object.fromEntries(window.parsedTables.map(t => [t.tableName, t]));
+    const change = { added: [], removed: [], changed: [] };
+    const newTables = [];
 
-    if (newTables.length === 0) {
-        console.log('Yeni tablo bulunamadı');
+    parsed.forEach(n => {
+        const o = oldBy[n.tableName];
+        if (!o) {
+            newTables.push(n);
+            change.added.push({ table: n.tableName, cols: n.columns.length });
+            return;
+        }
+        const { items, marks } = compareTable(o, n);
+        const idx = window.parsedTables.indexOf(o);
+        const merged = clone(n);
+        if (items.length) {
+            merged.diff = 'changed';
+            merged.columns.forEach(c => { if (marks[c.name]) c._diff = { kind: marks[c.name].kind, note: marks[c.name].note }; });
+            Object.entries(marks).forEach(([name, m]) => {
+                if (m.kind === 'removed') merged.columns.push({ ...clone(m.ghost), _diff: { kind: 'removed', note: m.note } });
+            });
+            change.changed.push({ table: n.tableName, items });
+        }
+        window.parsedTables[idx] = merged;
+        refreshTableColumns(merged);
+    });
+
+    if (markMissing && !fresh) {
+        const incoming = new Set(parsed.map(t => t.tableName));
+        window.parsedTables.forEach(t => {
+            if (!incoming.has(t.tableName)) {
+                t.diff = 'removed';
+                change.removed.push({ table: t.tableName, cols: t.columns.length });
+                refreshTableColumns(t);
+            }
+        });
+    }
+
+    const nothing = !change.added.length && !change.removed.length && !change.changed.length;
+    if (nothing) {
+        showToast('Şemada değişiklik yok');
+        updateUnrelatedState();
+        drawConnections();
+        saveState();
         return;
     }
 
-    // Mevcut tüm tablolarla birlikte pozisyonları hesapla
-    const allTables = [...window.parsedTables, ...newTables];
-
-    // Önce yeni tabloları oluştur
-    newTables.forEach((table) => {
-        const div = document.createElement('div');
-        div.className = 'table-box';
-
-        // İlişkisiz tablo mu kontrol et
-        if (!hasAnyRelationship(table, allTables)) {
-            div.classList.add('unrelated');
-        }
-
-        div.style.left = `0px`; // Geçici pozisyon
-        div.style.top = `0px`; // Geçici pozisyon
-        div.id = 'table-' + table.tableName;
-
-        const title = document.createElement('div');
-        title.className = 'table-name';
-        title.innerText = table.tableName;
-        div.appendChild(title);
-
-        table.columns.forEach(col => div.appendChild(buildColumnElement(table, col)));
-
-        document.getElementById('canvas').appendChild(div);
-        tables[table.tableName] = div;
-        window.parsedTables.push(table);
-        makeDraggable(div);
+    // Yeni tabloları modele ekle (ilk importta işaretsiz, sonrasında yeşil)
+    newTables.forEach(t => { if (!fresh) t.diff = 'added'; });
+    const all = [...window.parsedTables, ...newTables];
+    newTables.forEach(t => {
+        createTableElement(t, 0, 0);
+        window.parsedTables.push(t);
     });
+    updateUnrelatedState();
 
-    // Yazı tipleri yüklenip kutu ölçüleri oturduktan sonra yalnızca YENİ tabloları yerleştir (mevcutlar yerinde kalır)
+    const version = recordVersion('import', change);
+
     const fontsReady = (document.fonts && document.fonts.ready) ? document.fonts.ready : Promise.resolve();
     fontsReady.then(() => setTimeout(() => {
-        // Başlangıç noktası: mevcut tabloların sağında, yoksa sol üstte
-        let originX = 200, originY = 100;
-        const existing = allTables.filter(t => !newTables.includes(t) && tables[t.tableName]);
-        if (existing.length) {
-            originX = Math.max(...existing.map(t => tables[t.tableName].offsetLeft + tables[t.tableName].offsetWidth)) + LAYOUT_COMP_GAP;
-            originY = Math.min(...existing.map(t => tables[t.tableName].offsetTop));
-        }
+        if (fresh) placeFresh(newTables);
+        else placeIncremental(newTables);
+        updateUnrelatedState();
+        drawConnections();
+        renderHistory();
+        saveState();
+        const msg = [change.added.length && `${change.added.length} yeni`, change.changed.length && `${change.changed.length} değişen`,
+            change.removed.length && `${change.removed.length} silinen`].filter(Boolean).join(', ');
+        showToast(fresh ? `${parsed.length} tablo içe aktarıldı` : `Sürüm eklendi: ${msg} tablo`);
+        if (!fresh) revealNew(newTables);
+    }, 10));
+}
 
-        const positions = calculateTablePositions(newTables, originX, originY);
-        newTables.forEach(table => {
-            const el = tables[table.tableName];
-            const pos = positions[table.tableName];
-            if (el && pos) {
-                el.style.left = `${Math.round(pos.x)}px`;
-                el.style.top = `${Math.round(pos.y)}px`;
-            }
+// İlk import: kümeleme yerleşimi + otomatik sığdırma
+function placeFresh(newTables) {
+    const positions = calculateTablePositions(newTables, 200, 100);
+    newTables.forEach(table => {
+        const el = tables[table.tableName];
+        const pos = positions[table.tableName];
+        if (el && pos) {
+            el.style.left = `${Math.round(pos.x)}px`;
+            el.style.top = `${Math.round(pos.y)}px`;
+        }
+    });
+    const real = newTables.map(t => rectOf(t.tableName));
+    if (real.some((a, i) => real.some((b, j) => j > i && rectsOverlap(a, b, LAYOUT_GAP - 1)))) {
+        separateRects(real, LAYOUT_GAP);
+        real.forEach(r => {
+            tables[r.name].style.left = `${Math.round(r.x)}px`;
+            tables[r.name].style.top = `${Math.round(r.y)}px`;
         });
-        // Güvence: yerleştirmeden sonra gerçek ölçüleri yeniden al, çakışma varsa ayır
-        const real = newTables.map(t => {
-            const el = tables[t.tableName];
-            return { name: t.tableName, x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight };
-        });
-        if (real.some((a, i) => real.some((b, j) => j > i && rectsOverlap(a, b, LAYOUT_GAP - 1)))) {
-            separateRects(real, LAYOUT_GAP);
-            real.forEach(r => {
+    }
+    const maxX = Math.max(...newTables.map(t => tables[t.tableName].offsetLeft + tables[t.tableName].offsetWidth));
+    const maxY = Math.max(...newTables.map(t => tables[t.tableName].offsetTop + tables[t.tableName].offsetHeight));
+    ensureCanvasSize(maxX + 400, maxY + 400);
+    drawConnections();
+
+    setTimeout(() => {
+        autoFitZoom();
+        const fin = newTables.map(t => rectOf(t.tableName));
+        if (fin.some((a, i) => fin.some((b, j) => j > i && rectsOverlap(a, b, LAYOUT_GAP - 1)))) {
+            separateRects(fin, LAYOUT_GAP);
+            fin.forEach(r => {
                 tables[r.name].style.left = `${Math.round(r.x)}px`;
                 tables[r.name].style.top = `${Math.round(r.y)}px`;
             });
         }
-        const maxX = Math.max(...newTables.map(t => tables[t.tableName].offsetLeft + tables[t.tableName].offsetWidth));
-        const maxY = Math.max(...newTables.map(t => tables[t.tableName].offsetTop + tables[t.tableName].offsetHeight));
-        ensureCanvasSize(maxX + 400, maxY + 400);
-        updateUnrelatedState();
-
         drawConnections();
+        saveState();
+    }, 100);
+}
 
-        // Tablolar yerleştirildikten sonra otomatik zoom yap
-        setTimeout(() => {
-            autoFitZoom();
-            // Zoom değişince ölçüler oynayabilir: son bir çakışma denetimi
-            const fin = newTables.map(t => {
-                const el = tables[t.tableName];
-                return { name: t.tableName, x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight };
-            });
-            if (fin.some((a, i) => fin.some((b, j) => j > i && rectsOverlap(a, b, LAYOUT_GAP - 1)))) {
-                separateRects(fin, LAYOUT_GAP);
-                fin.forEach(r => {
-                    tables[r.name].style.left = `${Math.round(r.x)}px`;
-                    tables[r.name].style.top = `${Math.round(r.y)}px`;
-                });
-                drawConnections();
-            }
-        }, 100); // Pozisyonların tamamen yerleşmesi için biraz daha bekle
-    }, 10)); // DOM render'ının tamamlanması için kısa bir gecikme
+// Sonraki importlar: mevcut tablolar yerinde kalır; yeni tablo ilişkili olduğu tablonun yanına (ilişkisizse ilişkisizler alanına)
+function placeIncremental(newTables) {
+    const newNames = new Set(newTables.map(t => t.tableName));
+    const placed = (name) => !newNames.has(name) || placed.done.has(name);
+    placed.done = new Set();
+    const others = () => Object.keys(tables).filter(n => placed(n)).map(rectOf);
+
+    // İlişkisi olanlar önce (ilişkili tabloları yerleştirildikçe zincirleme yanlarına gelir), sonra ilişkisizler
+    const related = newTables.filter(t => hasAnyRelationship(t, window.parsedTables));
+    const loners = newTables.filter(t => !hasAnyRelationship(t, window.parsedTables));
+    let queue = related.slice();
+    let guard = queue.length + 2;
+    while (queue.length && guard--) {
+        const rest = [];
+        queue.forEach(t => {
+            const partners = new Set();
+            t.foreignKeys.forEach(f => partners.add(f.referencesTable));
+            window.parsedTables.forEach(o => { if (o.foreignKeys.some(f => f.referencesTable === t.tableName)) partners.add(o.tableName); });
+            const ready = [...partners].filter(n => n !== t.tableName && tables[n] && placed(n));
+            if (!ready.length && queue.length > 1 && guard > 0) { rest.push(t); return; }
+            const anchors = ready.map(rectOf);
+            const el = tables[t.tableName];
+            const pos = freeSpotNear(el, anchors.length ? anchors : others(), others(), LAYOUT_GAP);
+            el.style.left = Math.round(pos.x) + 'px';
+            el.style.top = Math.round(pos.y) + 'px';
+            placed.done.add(t.tableName);
+        });
+        queue = rest;
+    }
+
+    // İlişkisizler: mevcut ilişkisizlerin yanına; yoksa tüm şemanın dışında, sağda
+    loners.forEach(t => {
+        const el = tables[t.tableName];
+        const existingLoners = window.parsedTables
+            .filter(o => !newNames.has(o.tableName) && !hasAnyRelationship(o, window.parsedTables))
+            .map(o => rectOf(o.tableName));
+        const all = others();
+        let pos;
+        if (existingLoners.length) pos = freeSpotNear(el, existingLoners, all, LAYOUT_GAP);
+        else {
+            const right = Math.max(0, ...all.map(o => o.x + o.w));
+            const top = all.length ? Math.min(...all.map(o => o.y)) : 100;
+            pos = { x: right + LAYOUT_COMP_GAP, y: top };
+        }
+        el.style.left = Math.round(pos.x) + 'px';
+        el.style.top = Math.round(pos.y) + 'px';
+        placed.done.add(t.tableName);
+    });
+
+    const maxX = Math.max(...newTables.map(t => tables[t.tableName].offsetLeft + tables[t.tableName].offsetWidth));
+    const maxY = Math.max(...newTables.map(t => tables[t.tableName].offsetTop + tables[t.tableName].offsetHeight));
+    ensureCanvasSize(maxX + 400, maxY + 400);
+}
+
+// Yeni tablolar görünür alanın dışında kaldıysa ilkine kaydır
+function revealNew(newTables) {
+    if (!newTables.length) return;
+    const wr = document.getElementById('output-wrapper').getBoundingClientRect();
+    const off = newTables.find(t => {
+        const r = tables[t.tableName].getBoundingClientRect();
+        return r.right < wr.left || r.left > wr.right || r.bottom < wr.top || r.top > wr.bottom;
+    });
+    if (!off) return;
+    const w = document.getElementById('output-wrapper');
+    const el = tables[off.tableName];
+    w.scrollLeft = el.offsetLeft * currentZoom - w.clientWidth / 2 + el.offsetWidth * currentZoom / 2;
+    w.scrollTop = el.offsetTop * currentZoom - w.clientHeight / 2 + el.offsetHeight * currentZoom / 2;
+    drawConnections();
 }
 
 // Tüm tabloları gösterecek şekilde otomatik zoom ayarı
@@ -992,6 +1273,7 @@ function drawConnections() {
 })();
 
 document.getElementById('output-wrapper').addEventListener('scroll', function (e) {
+    saveStateSoon();
     const wrapper = e.target;
     const output = document.getElementById('output');
 
@@ -1363,6 +1645,7 @@ function togglePrimaryKey(tableName, columnName) {
     col.pk = !col.pk;
     refreshTableColumns(table);
     drawConnections();
+    saveState();
 }
 
 // Bir sütunun FK'sini ayarlar; ref null ise kaldırır
@@ -1383,6 +1666,7 @@ function setForeignKey(tableName, columnName, ref) {
     refreshTableColumns(table);
     updateUnrelatedState();
     drawConnections();
+    saveState();
 }
 
 // İlişkisiz (kesik çizgili) tablo görünümünü güncel ilişkilere göre yeniler
@@ -1640,7 +1924,7 @@ function applyZoom() {
 
     // Zoom out'ta pan alanı ekranı her zaman kaplasın
     ensureCanvasSize(outputWrapper.clientWidth / currentZoom, outputWrapper.clientHeight / currentZoom);
-    if (window.parsedTables) drawConnections(); // çizgiler ekran koordinatıyla çizildiği için zoom sonrası yenile
+    if (window.parsedTables) { drawConnections(); saveStateSoon(); } // çizgiler ekran koordinatıyla çizildiği için zoom sonrası yenile
 
     // Grid: CSS zoom çizgiyi de küçülttüğü için ekranda hep ~1px çizgi ve en az ~25px
     // aralık kalacak şekilde aralığı 2'nin katlarıyla büyüt, kalınlığı zoom'a göre telafi et
@@ -1670,8 +1954,187 @@ function applyZoom() {
 
     zoomInBtn.style.pointerEvents = currentZoom >= maxZoom ? 'none' : 'auto';
     zoomOutBtn.style.pointerEvents = currentZoom <= minZoom ? 'none' : 'auto';
-}// Initialize controls when page loads
+}// ---- Kalıcılık (localStorage) ve JSON dışa/içe aktarma ----
+const STATE_KEY = 'sqlDrawer.state.v1';
+
+function serializeState() {
+    const pos = {};
+    Object.entries(tables).forEach(([name, el]) => { pos[name] = [el.offsetLeft, el.offsetTop]; });
+    const w = document.getElementById('output-wrapper');
+    return {
+        app: 'sql-drawer', version: 1,
+        savedAt: new Date().toISOString(),
+        tables: window.parsedTables || [],
+        positions: pos,
+        zoom: currentZoom,
+        scroll: [w.scrollLeft, w.scrollTop],
+        history: window.history_ || []
+    };
+}
+
+function saveState() {
+    try { localStorage.setItem(STATE_KEY, JSON.stringify(serializeState())); } catch (e) { /* kota/gizli mod */ }
+}
+
+function saveStateSoon() {
+    clearTimeout(saveStateSoon._t);
+    saveStateSoon._t = setTimeout(saveState, 400);
+}
+
+// Kayıtlı durumu tuvale kurar
+function restoreState(st) {
+    Object.values(tables).forEach(el => el.remove());
+    tables = {};
+    focusedTable = null;
+    window.parsedTables = clone(st.tables || []);
+    window.history_ = clone(st.history || []);
+    window.parsedTables.forEach(t => {
+        const p = (st.positions || {})[t.tableName] || [0, 0];
+        createTableElement(t, p[0], p[1]);
+    });
+    let mx = 0, my = 0;
+    Object.values(tables).forEach(el => { mx = Math.max(mx, el.offsetLeft + el.offsetWidth); my = Math.max(my, el.offsetTop + el.offsetHeight); });
+    ensureCanvasSize(mx + 400, my + 400);
+    currentZoom = Math.max(minZoom, Math.min(maxZoom, st.zoom || 1));
+    applyZoom();
+    const w = document.getElementById('output-wrapper');
+    w.scrollLeft = (st.scroll || [0, 0])[0];
+    w.scrollTop = (st.scroll || [0, 0])[1];
+    updateUnrelatedState();
+    drawConnections();
+    renderHistory();
+}
+
+function loadSavedState() {
+    try {
+        const raw = localStorage.getItem(STATE_KEY);
+        if (!raw) return;
+        const st = JSON.parse(raw);
+        if (st && Array.isArray(st.tables) && st.tables.length) {
+            const go = () => setTimeout(() => restoreState(st), 0);
+            (document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve()).then(go);
+        } else if (st && Array.isArray(st.history)) {
+            window.history_ = st.history;
+        }
+    } catch (e) { /* bozuk kayıt: yok say */ }
+}
+
+function exportStateJSON() {
+    const blob = new Blob([JSON.stringify(serializeState(), null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'sql-drawer.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function importStateJSON(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+        try {
+            const st = JSON.parse(reader.result);
+            if (!st || !Array.isArray(st.tables)) throw new Error('geçersiz dosya');
+            restoreState(st);
+            saveState();
+            showToast(`${st.tables.length} tablo yüklendi`);
+        } catch (e) {
+            showToast('JSON dosyası okunamadı');
+        }
+    };
+    reader.readAsText(file);
+}
+
+// ---- Geçmiş paneli ----
+function fmtTime(iso) {
+    const d = new Date(iso);
+    const p = n => String(n).padStart(2, '0');
+    return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function versionSummary(v) {
+    const parts = [];
+    if (v.added.length) parts.push(`+${v.added.length} tablo`);
+    if (v.removed.length) parts.push(`−${v.removed.length} tablo`);
+    if (v.changed.length) parts.push(`~${v.changed.length} tablo`);
+    return parts.join(' · ') || 'değişiklik yok';
+}
+
+function renderHistory() {
+    const panel = document.getElementById('history-panel');
+    if (!panel) return;
+    const list = panel.querySelector('.hist-list');
+    const pend = pendingRemovalCount();
+    const btnRm = panel.querySelector('#hist-remove');
+    btnRm.textContent = `Silinenleri kaldır${pend ? ` (${pend})` : ''}`;
+    btnRm.disabled = !pend;
+    const badge = document.getElementById('history-count');
+    if (badge) badge.textContent = (window.history_ || []).length || '';
+
+    list.innerHTML = '';
+    const hist = window.history_ || [];
+    if (!hist.length) {
+        list.innerHTML = '<div class="hist-empty">Henüz sürüm yok. SQL içe aktarınca her import bir sürüm olur.</div>';
+        return;
+    }
+    hist.forEach((v, i) => {
+        const item = document.createElement('div');
+        item.className = 'hist-item' + (openHistory === v.id ? ' open' : '');
+        const head = document.createElement('div');
+        head.className = 'hist-head';
+        head.innerHTML = `<span class="hist-no">#${hist.length - i}</span><span class="hist-time"></span><span class="hist-src"></span><span class="hist-sum"></span>`;
+        head.querySelector('.hist-time').textContent = fmtTime(v.ts);
+        head.querySelector('.hist-src').textContent = v.source === 'manual' ? 'manuel' : 'import';
+        head.querySelector('.hist-sum').textContent = versionSummary(v);
+        head.addEventListener('click', () => { openHistory = openHistory === v.id ? null : v.id; renderHistory(); });
+        item.appendChild(head);
+
+        if (openHistory === v.id) {
+            const det = document.createElement('div');
+            det.className = 'hist-detail';
+            const line = (cls, text) => {
+                const d = document.createElement('div');
+                d.className = 'hist-line ' + cls;
+                d.textContent = text;
+                det.appendChild(d);
+                return d;
+            };
+            v.added.forEach(t => line('add', `+ ${t.table} (${t.cols} sütun)`));
+            v.removed.forEach(t => line('del', `− ${t.table} (${t.cols} sütun)`));
+            v.changed.forEach(t => {
+                line('chg', `~ ${t.table}`).classList.add('hist-tbl');
+                t.items.forEach(it => line(it.k, '   ' + it.t));
+            });
+            if (!det.children.length) line('', 'Ayrıntı yok');
+            item.appendChild(det);
+        }
+        list.appendChild(item);
+    });
+}
+let openHistory = null;
+
+function toggleHistoryPanel(force) {
+    const panel = document.getElementById('history-panel');
+    const open = force === undefined ? !panel.classList.contains('open') : force;
+    panel.classList.toggle('open', open);
+    document.getElementById('history-btn').classList.toggle('active', open);
+    if (open) renderHistory();
+}
+
+function initHistoryUI() {
+    document.getElementById('hist-clear').addEventListener('click', clearMarks);
+    document.getElementById('hist-remove').addEventListener('click', confirmRemovals);
+    document.getElementById('hist-close').addEventListener('click', () => toggleHistoryPanel(false));
+    const input = document.getElementById('json-file');
+    input.addEventListener('change', () => { if (input.files[0]) importStateJSON(input.files[0]); input.value = ''; });
+    renderHistory();
+}
+
+// Initialize controls when page loads
 document.addEventListener('DOMContentLoaded', () => {
     initZoomControls();
     initDarkMode();
+    initHistoryUI();
+    loadSavedState();
 });
