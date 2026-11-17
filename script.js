@@ -789,22 +789,23 @@ function drawConnections() {
 
                 // Self-reference kontrolü (aynı tablodaki sütunlar arası ilişki)
                 if (table.tableName === fk.referencesTable) {
-                    // Self-reference için özel curved path
-                    const fromCenterX = fromRect.left + fromRect.width / 2 - svgRect.left;
-                    const fromCenterY = fromRect.top + fromRect.height / 2 - svgRect.top;
-                    const toCenterX = toRect.left + toRect.width / 2 - svgRect.left;
-                    const toCenterY = toRect.top + toRect.height / 2 - svgRect.top;
-
-                    // Sağ kenardan çıkış
-                    const startX = fromRect.right - svgRect.left;
-                    const startY = fromCenterY;
-                    const endX = toRect.right - svgRect.left;
-                    const endY = toCenterY;
+                    // Self-reference: yay tablo kutusunun DIŞINDA (sağ kenar), zoom'dan bağımsız sabit ekran
+                    // boyutunda çizilir; sütun satırları zoom'la ~0'a küçülse de yay görünür kalır.
+                    const boxRect = (tables[table.tableName] || fromElement).getBoundingClientRect();
+                    const startX = boxRect.right - svgRect.left;
+                    const endX = startX;
+                    const startY = fromRect.top + fromRect.height / 2 - svgRect.top;
+                    const endY = toRect.top + toRect.height / 2 - svgRect.top;
 
                     // Curved path for self-reference
                     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-                    const offsetX = 50;
-                    const d = `M${startX},${startY} C${startX + offsetX},${startY} ${endX + offsetX},${endY} ${endX},${endY}`;
+                    const bulge = 46;      // yayın dışarı taşma miktarı (ekran px)
+                    const minLoop = 44;    // yayın en az görünür yüksekliği (ekran px)
+                    const dyArc = endY - startY;
+                    const dirArc = dyArc >= 0 ? 1 : -1;
+                    const spread = Math.max(0, (minLoop - Math.abs(dyArc)) / 2);
+                    const cx = startX + bulge * 1.33;
+                    const d = `M${startX},${startY} C${cx},${startY - dirArc * spread} ${cx},${endY + dirArc * spread} ${endX},${endY}`;
 
                     // Highlight durumunda beyaz stroke ekle
                     if (isHighlightedConnection) {
@@ -833,6 +834,15 @@ function drawConnections() {
                         }
                     }
                     svg.appendChild(path);
+
+                    // Yayın çıkış noktasına küçük nokta: hangi sütundan çıktığı görünsün
+                    const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                    dot.setAttribute('cx', startX);
+                    dot.setAttribute('cy', startY);
+                    dot.setAttribute('r', '3.5');
+                    dot.setAttribute('fill', '#e74c3c');
+                    if (isHighlightMode && !isHighlightedConnection) dot.setAttribute('opacity', '0.3');
+                    svg.appendChild(dot);
                 } else {
                     // Normal foreign key bağlantısı - düz çizgi
                     const fromCenterY = fromRect.top + fromRect.height / 2 - svgRect.top;
