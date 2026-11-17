@@ -495,6 +495,45 @@ function calculateTablePositions(newTables, originX, originY) {
 }
 
 // Sütun satırını (PK/FK rozetleriyle) oluşturur
+// Sütun tipi metnini parçalar: temel tip, NOT NULL, DEFAULT, kalan (AUTO_INCREMENT, COMMENT ...)
+function parseColType(str) {
+    str = String(str || '').trim();
+    const kw = /^(NOT\s+NULL|NULL|DEFAULT|AUTO_INCREMENT|AUTOINCREMENT|COMMENT|CHARACTER\s+SET|CHARSET|COLLATE|ON\s+UPDATE|GENERATED|UNIQUE|CHECK)\b/i;
+    let depth = 0, quote = null, cut = str.length;
+    for (let i = 0; i < str.length; i++) {
+        const ch = str[i];
+        if (quote) { if (ch === quote) quote = null; continue; }
+        if (ch === "'" || ch === '"' || ch === '`') { quote = ch; continue; }
+        if (ch === '(') depth++;
+        else if (ch === ')') depth--;
+        else if (depth === 0 && /\s/.test(str[i - 1] || ' ') && kw.test(str.slice(i))) { cut = i; break; }
+    }
+    const base = str.slice(0, cut).trim();
+    let rest = str.slice(cut);
+    const notNull = /\bNOT\s+NULL\b/i.test(rest);
+    rest = rest.replace(/\bNOT\s+NULL\b/i, '').replace(/(^|\s)NULL\b/i, ' ');
+    let def = '';
+    const dm = rest.match(/\bDEFAULT\s+('(?:[^']|'')*'|\((?:[^()]|\([^()]*\))*\)|[^\s,]+(?:\([^)]*\))?)/i);
+    if (dm) { def = dm[1]; rest = rest.replace(dm[0], ' '); }
+    return { base, notNull, def, extra: rest.replace(/\s+/g, ' ').trim() };
+}
+
+function composeColType(p) {
+    return [p.base, p.notNull ? 'NOT NULL' : '', p.def !== '' && p.def != null ? 'DEFAULT ' + p.def : '', p.extra]
+        .filter(Boolean).join(' ').trim();
+}
+
+// Kutuda gösterilecek kısa tip: enum/set -> enum(5); uzun tipler kısaltılır
+function shortType(typeStr) {
+    const base = parseColType(typeStr).base;
+    const m = base.match(/^(enum|set)\s*\(([\s\S]*)\)\s*(.*)$/i);
+    if (m) {
+        const n = (m[2].match(/'(?:[^']|'')*'|"(?:[^"]|"")*"/g) || []).length;
+        return `${m[1].toLowerCase()}(${n || '…'})`;
+    }
+    return base.length > 26 ? base.slice(0, 25) + '…' : base;
+}
+
 function buildColumnElement(table, col) {
     const colDiv = document.createElement('div');
     colDiv.className = 'column';
@@ -520,7 +559,19 @@ function buildColumnElement(table, col) {
         colDiv.appendChild(badge);
     }
 
-    colDiv.appendChild(document.createTextNode(`${col.name} (${col.type})`));
+    const pt = parseColType(col.type);
+    const text = document.createElement('span');
+    text.className = 'col-text';
+    text.textContent = `${col.name} (${shortType(col.type)})`;
+    colDiv.appendChild(text);
+    if (pt.notNull) {
+        const nn = document.createElement('span');
+        nn.className = 'col-badge col-badge-nn';
+        nn.textContent = 'NN';
+        colDiv.appendChild(nn);
+    }
+    const full = `${col.name} ${col.type}`.trim();
+    colDiv.title = (colDiv.title ? colDiv.title + '\n' : '') + full;
     return colDiv;
 }
 
@@ -563,6 +614,7 @@ function createTableElement(table, x, y) {
     const label = document.createElement('span');
     label.className = 'table-name-text';
     label.textContent = table.tableName;
+    label.title = table.tableName;
     title.appendChild(label);
     div.appendChild(title);
 
@@ -1374,7 +1426,10 @@ function fkClause(g) {
 // Bağımlılık sırasına dizer; döngüsel FK'lar sonda ALTER TABLE ile eklenir.
 function generateDDL(names) {
     const wanted = new Set(names);
-    const list = window.parsedTables.filter(t => wanted.has(t.tableName));
+    const gone = new Set(window.parsedTables.filter(t => t.diff === 'removed').map(t => t.tableName));
+    const list = window.parsedTables.filter(t => wanted.has(t.tableName) && !gone.has(t.tableName))
+        .map(t => ({ ...t, columns: t.columns.filter(c => !(c._diff && c._diff.kind === 'removed')),
+                     foreignKeys: t.foreignKeys.filter(f => !gone.has(f.referencesTable)) }));
     const groups = {};
     list.forEach(t => { groups[t.tableName] = groupForeignKeys(t); });
 
@@ -1427,8 +1482,8 @@ function generateDDL(names) {
 // Markdown: her tablo için Sütun | Tür | Anahtar | Referans tablosu
 function generateMarkdown(names) {
     const wanted = new Set(names);
-    return window.parsedTables.filter(t => wanted.has(t.tableName)).map(t => {
-        const rows = t.columns.map(c => {
+    return window.parsedTables.filter(t => wanted.has(t.tableName) && t.diff !== 'removed').map(t => {
+        const rows = t.columns.filter(c => !(c._diff && c._diff.kind === 'removed')).map(c => {
             const keys = [];
             if (c.pk) keys.push('PK');
             const fks = t.foreignKeys.filter(f => f.column === c.name);

@@ -106,6 +106,7 @@ body {
     cursor: move;
     user-select: none;
     width: 420px;
+    max-width: 420px;
     min-height: 150px;
     /* Minimum yükseklik */
     text-align: left;
@@ -848,3 +849,9 @@ html {
     background: #212529; color: #fff; font-size: 12px; padding: 4px 8px; border-radius: 6px; opacity: 0; pointer-events: none; transition: opacity .12s; z-index: 200; }
 .tool-btn:hover::after { opacity: 1; }
 .tool-btn .tool-badge { position: absolute; top: 2px; right: 2px; margin: 0; }
+
+/* Madde 8: uzun tip/sütun adları taşmasın */
+.table-box .column { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.column .col-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.column .col-badge-nn { flex: none; font-size: 9px; font-weight: 700; padding: 1px 4px; border-radius: 3px; border: 1px solid var(--column-border); opacity: .7; }
+.table-name-text { display: inline-block; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
