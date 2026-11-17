@@ -86,9 +86,12 @@ body {
     min-width: 800vw;
     min-height: 400vh;
     background-color: var(--output-bg);
-    background-image: linear-gradient(to right, var(--grid-color) 1px, transparent 1px),
-        linear-gradient(to bottom, var(--grid-color) 1px, transparent 1px);
-    background-size: 100px 100px;
+    /* Grid boyutu ve çizgi kalınlığı applyZoom() ile zoom'a göre ayarlanır */
+    --grid-size: 100px;
+    --grid-line: 1px;
+    background-image: linear-gradient(to right, var(--grid-color) var(--grid-line), transparent var(--grid-line)),
+        linear-gradient(to bottom, var(--grid-color) var(--grid-line), transparent var(--grid-line));
+    background-size: var(--grid-size) var(--grid-size);
     transition: background-color 0.3s ease, background-image 0.3s ease;
 }
 

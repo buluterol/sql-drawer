@@ -1093,9 +1093,12 @@ function applyZoom() {
     ensureCanvasSize(outputWrapper.clientWidth / currentZoom, outputWrapper.clientHeight / currentZoom);
     if (window.parsedTables) drawConnections(); // çizgiler ekran koordinatıyla çizildiği için zoom sonrası yenile
 
-    // Grid background size'ı güncelle
-    const gridSize = 100; // Orijinal grid size, zoom otomatik olarak uygular
-    output.style.backgroundSize = `${gridSize}px ${gridSize}px`;
+    // Grid: CSS zoom çizgiyi de küçülttüğü için ekranda hep ~1px çizgi ve en az ~25px
+    // aralık kalacak şekilde aralığı 2'nin katlarıyla büyüt, kalınlığı zoom'a göre telafi et
+    let gridSize = 100;
+    while (gridSize * currentZoom < 25) gridSize *= 2;
+    output.style.setProperty('--grid-size', `${gridSize}px`);
+    output.style.setProperty('--grid-line', `${Math.max(1, 1 / currentZoom).toFixed(3)}px`);
 
     // Update zoom level display
     const zoomLevel = document.getElementById('zoom-level');
