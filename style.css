@@ -711,3 +711,31 @@ html {
 .col-badge-fk {
     background: #3498db;
 }
+
+.context-menu-separated {
+    border-top: 1px solid var(--border-color);
+}
+
+/* FK penceresi */
+.fk-dialog-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 20px;
+    color: var(--text-color);
+}
+
+.fk-dialog-body label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 14px;
+}
+
+.fk-dialog-body select {
+    padding: 8px;
+    border: 1px solid var(--column-border);
+    border-radius: 6px;
+    background: var(--column-bg);
+    color: var(--text-color);
+}

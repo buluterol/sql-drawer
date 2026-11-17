@@ -226,7 +226,8 @@ function makeDraggable(element) {
     // Right-click context menu
     element.addEventListener('contextmenu', (e) => {
         const tableName = element.id.replace('table-', '');
-        showContextMenu(e, tableName);
+        const colEl = e.target.closest('.column');
+        showContextMenu(e, tableName, colEl ? colEl.dataset.column : null);
     });
 }
 
@@ -947,54 +948,171 @@ function clearHighlight() {
 
     // Bağlantıları yeniden çiz
     drawConnections();
-}// Context menu oluşturan fonksiyon
+}// Context menu oluşturan fonksiyon (öğeler showContextMenu'da doldurulur)
 function createContextMenu() {
     const menu = document.createElement('div');
     menu.id = 'context-menu';
     menu.className = 'context-menu';
-
-    const highlightItem = document.createElement('div');
-    highlightItem.className = 'context-menu-item';
-    highlightItem.textContent = '🔍 Öne Çıkar';
-    highlightItem.onclick = function () {
-        const tableName = menu.dataset.tableName;
-        if (tableName) {
-            highlightTable(tableName);
-        }
-        hideContextMenu();
-    };
-
-    const exportItem = document.createElement('div');
-    exportItem.className = 'context-menu-item';
-    exportItem.textContent = '📤 Dışa Aktar';
-    exportItem.onclick = function () {
-        const tableName = menu.dataset.tableName;
-        if (tableName) {
-            exportTableAsSQL(tableName);
-        }
-        hideContextMenu();
-    };
-
-    menu.appendChild(highlightItem);
-    menu.appendChild(exportItem);
     document.body.appendChild(menu);
-
     return menu;
 }
 
-// Context menu'yu gösteren fonksiyon
-function showContextMenu(e, tableName) {
+function addMenuItem(menu, label, handler, separated) {
+    const item = document.createElement('div');
+    item.className = 'context-menu-item' + (separated ? ' context-menu-separated' : '');
+    item.textContent = label;
+    item.onclick = function () {
+        hideContextMenu();
+        handler();
+    };
+    menu.appendChild(item);
+}
+
+// Context menu'yu gösteren fonksiyon. columnName verilirse sütuna özel işlemler de eklenir.
+function showContextMenu(e, tableName, columnName) {
     e.preventDefault();
 
     let menu = document.getElementById('context-menu');
     if (!menu) {
         menu = createContextMenu();
     }
-
+    menu.innerHTML = '';
     menu.dataset.tableName = tableName;
+
+    const table = window.parsedTables.find(t => t.tableName === tableName);
+    const col = table && columnName ? table.columns.find(c => c.name === columnName) : null;
+
+    if (col) {
+        const fk = table.foreignKeys.find(f => f.column === col.name);
+        addMenuItem(menu, col.pk ? '🔑 Primary Key\'i kaldır' : '🔑 Primary Key olarak işaretle',
+            () => togglePrimaryKey(tableName, col.name));
+        addMenuItem(menu, fk ? '🔗 Foreign Key\'i düzenle…' : '🔗 Foreign Key tanımla…',
+            () => showForeignKeyDialog(tableName, col.name));
+        if (fk) {
+            addMenuItem(menu, `✂️ Foreign Key'i kaldır (→ ${fk.referencesTable}.${fk.referencesColumn})`,
+                () => setForeignKey(tableName, col.name, null));
+        }
+    }
+
+    addMenuItem(menu, '🔍 Öne Çıkar', () => highlightTable(tableName), !!col);
+    addMenuItem(menu, '📤 Dışa Aktar', () => exportTableAsSQL(tableName));
+
     menu.style.display = 'block';
     menu.style.left = e.pageX + 'px';
     menu.style.top = e.pageY + 'px';
+}
+
+// PK işaretini aç/kapat (birden çok sütun işaretlenirse bileşik PK olur)
+function togglePrimaryKey(tableName, columnName) {
+    const table = window.parsedTables.find(t => t.tableName === tableName);
+    const col = table && table.columns.find(c => c.name === columnName);
+    if (!col) return;
+    col.pk = !col.pk;
+    refreshTableColumns(table);
+    drawConnections();
+}
+
+// Bir sütunun FK'sini ayarlar; ref null ise kaldırır
+function setForeignKey(tableName, columnName, ref) {
+    const table = window.parsedTables.find(t => t.tableName === tableName);
+    if (!table) return;
+
+    table.foreignKeys = table.foreignKeys.filter(f => f.column !== columnName);
+    if (ref) {
+        table.foreignKeys.push({
+            name: null,
+            column: columnName,
+            referencesTable: ref.table,
+            referencesColumn: ref.column
+        });
+    }
+
+    refreshTableColumns(table);
+    updateUnrelatedState();
+    drawConnections();
+}
+
+// İlişkisiz (kesik çizgili) tablo görünümünü güncel ilişkilere göre yeniler
+function updateUnrelatedState() {
+    window.parsedTables.forEach(t => {
+        const el = tables[t.tableName];
+        if (el) el.classList.toggle('unrelated', !hasAnyRelationship(t, window.parsedTables));
+    });
+}
+
+// FK hedefi seçme penceresi (hedef tablo + kolon)
+function showForeignKeyDialog(tableName, columnName) {
+    hideExportPopup();
+    const table = window.parsedTables.find(t => t.tableName === tableName);
+    const existing = table.foreignKeys.find(f => f.column === columnName);
+
+    const popup = document.createElement('div');
+    popup.id = 'export-popup';
+    popup.className = 'export-popup';
+
+    const content = document.createElement('div');
+    content.className = 'export-popup-content fk-dialog';
+    content.innerHTML = `
+        <div class="export-popup-header">
+            <h3>🔗 Foreign Key - ${tableName}.${columnName}</h3>
+            <button class="export-close-btn" type="button">×</button>
+        </div>
+        <div class="fk-dialog-body">
+            <label>Hedef tablo
+                <select id="fk-target-table"></select>
+            </label>
+            <label>Hedef kolon
+                <select id="fk-target-column"></select>
+            </label>
+        </div>
+        <div class="export-popup-buttons"></div>
+    `;
+
+    const tableSelect = content.querySelector('#fk-target-table');
+    const columnSelect = content.querySelector('#fk-target-column');
+
+    window.parsedTables.forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t.tableName;
+        opt.textContent = t.tableName;
+        tableSelect.appendChild(opt);
+    });
+
+    const fillColumns = (selectedColumn) => {
+        const target = window.parsedTables.find(t => t.tableName === tableSelect.value);
+        columnSelect.innerHTML = '';
+        // PK sütunları önce
+        [...target.columns].sort((a, b) => (b.pk ? 1 : 0) - (a.pk ? 1 : 0)).forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c.name;
+            opt.textContent = c.name + (c.pk ? ' (PK)' : '');
+            columnSelect.appendChild(opt);
+        });
+        if (selectedColumn) columnSelect.value = selectedColumn;
+    };
+
+    tableSelect.addEventListener('change', () => fillColumns());
+    if (existing) tableSelect.value = existing.referencesTable;
+    fillColumns(existing && existing.referencesColumn);
+
+    const buttons = content.querySelector('.export-popup-buttons');
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'export-btn export-btn-primary';
+    saveBtn.textContent = 'Kaydet';
+    saveBtn.onclick = () => {
+        setForeignKey(tableName, columnName, { table: tableSelect.value, column: columnSelect.value });
+        hideExportPopup();
+    };
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'export-btn export-btn-secondary';
+    cancelBtn.textContent = 'İptal';
+    cancelBtn.onclick = hideExportPopup;
+    buttons.appendChild(saveBtn);
+    buttons.appendChild(cancelBtn);
+    content.querySelector('.export-close-btn').onclick = hideExportPopup;
+
+    popup.appendChild(content);
+    document.body.appendChild(popup);
 }
 
 // Context menu'yu gizleyen fonksiyon
