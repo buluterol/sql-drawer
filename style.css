@@ -270,19 +270,24 @@ line {
     background-color: var(--context-menu-hover);
 }
 
-/* Highlighted Tables */
+/* Odak vurgusu: bağlı tablolar öne çıkar, diğerleri soluklaşır */
 .table-box.highlighted {
     z-index: 15 !important;
-    box-shadow: 0 8px 25px rgba(52, 152, 219, 0.4) !important;
-    border: 3px solid #3498db !important;
-    transform: scale(1.02);
-    transition: all 0.3s ease;
+    border-color: #f59f00 !important;
+    box-shadow: 0 8px 22px rgba(245, 159, 0, 0.35) !important;
+}
+
+.table-box.focus-main {
+    z-index: 16 !important;
+    border-width: 3px;
+    box-shadow: 0 0 0 4px rgba(245, 159, 0, 0.35), 0 10px 26px rgba(245, 159, 0, 0.4) !important;
 }
 
 .table-box.dimmed {
-    opacity: 0.4;
+    opacity: 0.22;
+    filter: grayscale(0.6);
     z-index: 2;
-    transition: opacity 0.3s ease;
+    transition: opacity 0.25s ease, filter 0.25s ease;
 }
 
 /* Export Popup Styles */

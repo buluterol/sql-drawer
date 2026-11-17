@@ -8,6 +8,7 @@ const zoomStep = 0.1;
 
 // Dark mode değişkenleri
 let isDarkMode = false;
+let focusedTable = null; // odak vurgusu: tıklanan tablo
 
 // Dark mode functions
 function initDarkMode() {
@@ -228,14 +229,7 @@ function makeDraggable(element) {
         startLeft = parseFloat(element.style.left) || 0;
         startTop = parseFloat(element.style.top) || 0;
 
-        // Highlight modunda SVG'yi gizle (performans için)
-        const highlightedElements = document.querySelectorAll('.table-box.highlighted');
-        const isHighlightMode = highlightedElements.length > 0;
-        const svg = document.getElementById('connections');
-
-        if (isHighlightMode) {
-            svg.style.display = 'none';
-        }
+        let moved = false;
 
         // Sürükleme sırasında transition'ları devre dışı bırak
         element.style.transition = 'none';
@@ -246,6 +240,7 @@ function makeDraggable(element) {
             const dx = (e.clientX - startX) / effectiveZoom;
             const dy = (e.clientY - startY) / effectiveZoom;
 
+            if (Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY) > 3) moved = true;
             let newLeft = startLeft + dx;
             let newTop = startTop + dy;
 
@@ -263,11 +258,7 @@ function makeDraggable(element) {
                 output.style.minHeight = (output.offsetHeight + 1000) + 'px';
             }
 
-            // Highlight modunda ipleri güncelleme
-            if (!isHighlightMode) {
-                // Normal modda her hareket için güncelle
-                drawConnections();
-            }
+            drawConnections();
         };
 
         document.onmouseup = function () {
@@ -275,9 +266,10 @@ function makeDraggable(element) {
             document.onmouseup = null;
             isDragging = false;
 
-            // SVG'yi tekrar göster ve bağlantıları çiz
-            if (isHighlightMode) {
-                svg.style.display = 'block';
+            // Sürükleme olmadan tıklama: odak vurgusu (aynı tabloya tekrar tıklayınca kalkar)
+            if (!moved) {
+                const name = element.id.replace('table-', '');
+                if (focusedTable === name) clearHighlight(); else focusTable(name);
             }
 
             // Transition'ları tekrar etkinleştir
@@ -756,22 +748,15 @@ function roundToNearestTen(zoom) {
     return clamped / 100;
 }
 
+const FOCUS_COLOR = '#f59f00';
+
 function drawConnections() {
     const svg = document.getElementById('connections');
     // <defs> (ok ucu) korunur; yalnız çizgiler yenilenir
     Array.from(svg.children).forEach(c => { if (c.tagName.toLowerCase() !== 'defs') c.remove(); });
 
-    // Highlight durumunu kontrol et - highlighted tablolar var mı?
-    const highlightedElements = document.querySelectorAll('.table-box.highlighted');
-    const isHighlightMode = highlightedElements.length > 0;
-    const highlightedTables = new Set();
-
-    if (isHighlightMode) {
-        highlightedElements.forEach(table => {
-            const tableName = table.id.replace('table-', '');
-            highlightedTables.add(tableName);
-        });
-    }
+    // Odak modu: yalnız odaktaki tabloya bağlı ipler öne çıkar
+    const isHighlightMode = !!focusedTable;
 
     window.parsedTables.forEach(table => {
         table.foreignKeys.forEach(fk => {
@@ -785,7 +770,8 @@ function drawConnections() {
 
                 // Bu bağlantı highlight edilmiş tablolar arasında mı?
                 const isHighlightedConnection = !isHighlightMode ||
-                    (highlightedTables.has(table.tableName) && highlightedTables.has(fk.referencesTable));
+                    table.tableName === focusedTable || fk.referencesTable === focusedTable;
+                const focusLine = isHighlightMode && isHighlightedConnection;
 
                 // Self-reference kontrolü (aynı tablodaki sütunlar arası ilişki)
                 if (table.tableName === fk.referencesTable) {
@@ -820,8 +806,8 @@ function drawConnections() {
                     }
 
                     path.setAttribute('d', d);
-                    path.setAttribute('stroke', '#e74c3c');
-                    path.setAttribute('stroke-width', '2');
+                    path.setAttribute('stroke', focusLine ? FOCUS_COLOR : '#e74c3c');
+                    path.setAttribute('stroke-width', focusLine ? '3.5' : '2');
                     path.setAttribute('fill', 'none');
                     path.setAttribute('marker-end', 'url(#arrow)');
 
@@ -830,7 +816,7 @@ function drawConnections() {
                     } else {
                         path.setAttribute('class', 'connection-normal');
                         if (isHighlightMode) {
-                            path.setAttribute('opacity', '0.3');
+                            path.setAttribute('opacity', '0.12');
                         }
                     }
                     svg.appendChild(path);
@@ -840,8 +826,8 @@ function drawConnections() {
                     dot.setAttribute('cx', startX);
                     dot.setAttribute('cy', startY);
                     dot.setAttribute('r', '3.5');
-                    dot.setAttribute('fill', '#e74c3c');
-                    if (isHighlightMode && !isHighlightedConnection) dot.setAttribute('opacity', '0.3');
+                    dot.setAttribute('fill', focusLine ? FOCUS_COLOR : '#e74c3c');
+                    if (isHighlightMode && !isHighlightedConnection) dot.setAttribute('opacity', '0.12');
                     svg.appendChild(dot);
                 } else {
                     // Normal foreign key bağlantısı - düz çizgi
@@ -886,8 +872,8 @@ function drawConnections() {
                     line.setAttribute('y1', fromCenterY);
                     line.setAttribute('x2', endX);
                     line.setAttribute('y2', toCenterY);
-                    line.setAttribute('stroke', '#3498db');
-                    line.setAttribute('stroke-width', '2');
+                    line.setAttribute('stroke', focusLine ? FOCUS_COLOR : '#3498db');
+                    line.setAttribute('stroke-width', focusLine ? '3.5' : '2');
                     line.setAttribute('marker-end', 'url(#arrow)');
 
                     if (isHighlightedConnection) {
@@ -895,7 +881,7 @@ function drawConnections() {
                     } else {
                         line.setAttribute('class', 'connection-normal');
                         if (isHighlightMode) {
-                            line.setAttribute('opacity', '0.3');
+                            line.setAttribute('opacity', '0.12');
                         }
                     }
                     svg.appendChild(line);
@@ -956,27 +942,23 @@ function getRelatedTables(targetTableName) {
     return Array.from(relatedTables);
 }
 
-// Tabloları highlight eden fonksiyon
-function highlightTable(tableName) {
-    const relatedTableNames = getRelatedTables(tableName);
-
-    // Tüm tabloları dim yap
-    Object.values(tables).forEach(tableElement => {
-        tableElement.classList.remove('highlighted', 'dimmed');
-        tableElement.classList.add('dimmed');
+// Odak vurgusu: tabloya bağlı ipler ve uçlarındaki tablolar öne çıkar, gerisi soluklaşır
+function focusTable(tableName) {
+    if (!tables[tableName]) return;
+    focusedTable = tableName;
+    const related = new Set(getRelatedTables(tableName));
+    Object.entries(tables).forEach(([name, el]) => {
+        el.classList.remove('highlighted', 'dimmed', 'focus-main');
+        if (name === tableName) el.classList.add('highlighted', 'focus-main');
+        else if (related.has(name)) el.classList.add('highlighted');
+        else el.classList.add('dimmed');
     });
-
-    // İlişkili tabloları highlight yap
-    relatedTableNames.forEach(name => {
-        const tableElement = tables[name];
-        if (tableElement) {
-            tableElement.classList.remove('dimmed');
-            tableElement.classList.add('highlighted');
-        }
-    });
-
-    // Bağlantıları yeniden çiz
     drawConnections();
+}
+
+// Eski ad: bağlam menüsü "Öne Çıkar"
+function highlightTable(tableName) {
+    focusTable(tableName);
 }
 
 // ---- Metin çıktıları (SQL DDL / Markdown) ----
@@ -1217,15 +1199,16 @@ function hideExportPopup() {
     }
 }
 
-// Highlight'ı temizleyen fonksiyon
+// Odak vurgusunu temizler
 function clearHighlight() {
+    focusedTable = null;
     Object.values(tables).forEach(tableElement => {
-        tableElement.classList.remove('highlighted', 'dimmed');
+        tableElement.classList.remove('highlighted', 'dimmed', 'focus-main');
     });
-
-    // Bağlantıları yeniden çiz
     drawConnections();
-}// Context menu oluşturan fonksiyon (öğeler showContextMenu'da doldurulur)
+}
+
+// Context menu oluşturan fonksiyon (öğeler showContextMenu'da doldurulur)
 function createContextMenu() {
     const menu = document.createElement('div');
     menu.id = 'context-menu';
