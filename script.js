@@ -72,44 +72,74 @@ function splitDefinitions(body) {
     return parts;
 }
 
+// Tek tanımlayıcı: `ad`, "ad", [ad] ya da çıplak ad; "sema.ad" biçiminde nitelenmiş olabilir
+const IDENT_SRC = '(?:`[^`]+`|"[^"]+"|\\[[^\\]]+\\]|[\\w$]+)';
+const QIDENT_SRC = `${IDENT_SRC}(?:\\s*\\.\\s*${IDENT_SRC})*`;
+const IDENT_RE = new RegExp(IDENT_SRC, 'g');
+
+function unquoteIdent(str) {
+    return str.replace(/^[`"\[]|[`"\]]$/g, '');
+}
+
+// "public"."tablo" -> tablo (şema öneki atılır)
+function lastIdent(qualified) {
+    const parts = qualified.match(IDENT_RE);
+    return unquoteIdent(parts ? parts[parts.length - 1] : qualified.trim());
+}
+
 function parseIdentList(str) {
-    return str.split(',').map(x => x.trim().replace(/^[`"\[]|[`"\]]$/g, '')).filter(Boolean);
+    return str.split(',').map(x => lastIdent(x.trim())).filter(Boolean);
 }
 
 // CREATE TABLE sorgularını ayrıştırır.
 // Tablo: { tableName, columns: [{name, type, pk}], foreignKeys: [{name, column, referencesTable, referencesColumn}] }
 // Bileşik FK, aynı `name` ile sütun çifti başına bir kayıt olarak tutulur.
+// Sütun listesi verilmeyen REFERENCES (tablo) hedef tablonun PK'sına, yoksa aynı ada bağlanır.
 function parseCreateTable(sql) {
-    const createTableRegex = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)[`"]?\s*\(([\s\S]*?)\)\s*(?:ENGINE\b|;|$)/gi;
-    const pkRegex = /^PRIMARY\s+KEY\s*\(([^)]*)\)/i;
-    const fkRegex = /^(?:CONSTRAINT\s+[`"]?(\w+)[`"]?\s+)?FOREIGN\s+KEY\s*\(([^)]*)\)\s*REFERENCES\s+[`"]?(\w+)[`"]?\s*\(([^)]*)\)/i;
-    const skipRegex = /^(?:UNIQUE|KEY|INDEX|FULLTEXT|SPATIAL|CHECK|CONSTRAINT)\b/i;
+    const createTableRegex = new RegExp(`CREATE\\s+(?:(?:GLOBAL\\s+|LOCAL\\s+)?(?:TEMPORARY|TEMP)\\s+|UNLOGGED\\s+)?TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(${QIDENT_SRC})\\s*\\(`, 'gi');
+    const pkRegex = /^(?:CONSTRAINT\s+\S+\s+)?PRIMARY\s+KEY\s*\(([^)]*)\)/i;
+    const fkRegex = new RegExp(`^(?:CONSTRAINT\\s+(${IDENT_SRC})\\s+)?FOREIGN\\s+KEY\\s*\\(([^)]*)\\)\\s*REFERENCES\\s+(${QIDENT_SRC})\\s*(?:\\(([^)]*)\\))?`, 'i');
+    const refRegex = new RegExp(`\\s*\\bREFERENCES\\s+(${QIDENT_SRC})\\s*(?:\\(([^)]*)\\))?`, 'i');
+    const colRegex = new RegExp(`^(${IDENT_SRC})\\s+([\\s\\S]+)$`);
+    const skipRegex = /^(?:UNIQUE|KEY|INDEX|FULLTEXT|SPATIAL|CHECK|CONSTRAINT|EXCLUDE|LIKE)\b/i;
 
     const results = [];
     let match;
 
     while ((match = createTableRegex.exec(sql)) !== null) {
-        const table = { tableName: match[1], columns: [], foreignKeys: [] };
+        // Gövde: açılış parantezinden eşleşen kapanışa kadar (iç içe parantezlere duyarlı)
+        const start = match.index + match[0].length;
+        let depth = 1, end = start;
+        while (end < sql.length && depth > 0) {
+            if (sql[end] === '(') depth++;
+            else if (sql[end] === ')') depth--;
+            end++;
+        }
+        const body = sql.slice(start, end - 1);
+        createTableRegex.lastIndex = end;
+
+        const table = { tableName: lastIdent(match[1]), columns: [], foreignKeys: [] };
         const tablePk = [];
 
-        splitDefinitions(match[2]).forEach(line => {
+        splitDefinitions(body).forEach(line => {
             let m;
             if ((m = line.match(pkRegex))) {
                 tablePk.push(...parseIdentList(m[1]));
             } else if ((m = line.match(fkRegex))) {
                 const cols = parseIdentList(m[2]);
-                const refCols = parseIdentList(m[4]);
+                const refCols = m[4] ? parseIdentList(m[4]) : [];
                 cols.forEach((col, i) => {
                     table.foreignKeys.push({
-                        name: m[1] || null,
+                        name: m[1] ? unquoteIdent(m[1]) : null,
                         column: col,
-                        referencesTable: m[3],
-                        referencesColumn: refCols[i] || refCols[0]
+                        referencesTable: lastIdent(m[3]),
+                        referencesColumn: refCols[i] || refCols[0] || null
                     });
                 });
             } else if (!skipRegex.test(line)) {
-                const colMatch = line.match(/^[`"]?(\w+)[`"]?\s+([\s\S]+)$/);
+                const colMatch = line.match(colRegex);
                 if (!colMatch) return;
+                const colName = unquoteIdent(colMatch[1]);
                 let type = colMatch[2].replace(/\s+/g, ' ').trim();
                 let pk = false;
 
@@ -118,17 +148,17 @@ function parseCreateTable(sql) {
                     pk = true;
                     type = type.replace(/\s*\bPRIMARY\s+KEY\b/i, '');
                 }
-                const refMatch = type.match(/\s*\bREFERENCES\s+[`"]?(\w+)[`"]?\s*\(([^)]*)\)/i);
+                const refMatch = type.match(refRegex);
                 if (refMatch) {
                     table.foreignKeys.push({
                         name: null,
-                        column: colMatch[1],
-                        referencesTable: refMatch[1],
-                        referencesColumn: parseIdentList(refMatch[2])[0]
+                        column: colName,
+                        referencesTable: lastIdent(refMatch[1]),
+                        referencesColumn: refMatch[2] ? parseIdentList(refMatch[2])[0] : null
                     });
                     type = type.replace(refMatch[0], '');
                 }
-                table.columns.push({ name: colMatch[1], type: type.trim(), pk });
+                table.columns.push({ name: colName, type: type.trim(), pk });
             }
         });
 
@@ -139,6 +169,37 @@ function parseCreateTable(sql) {
 
         results.push(table);
     }
+
+    // ALTER TABLE ... ADD [CONSTRAINT ad] FOREIGN KEY (...) REFERENCES ... (dump dosyalarında yaygın)
+    const alterRegex = new RegExp(`ALTER\\s+TABLE\\s+(?:ONLY\\s+)?(?:IF\\s+EXISTS\\s+)?(${QIDENT_SRC})\\s+([\\s\\S]*?);`, 'gi');
+    const addFkRegex = new RegExp(`ADD\\s+(?:CONSTRAINT\\s+(${IDENT_SRC})\\s+)?FOREIGN\\s+KEY\\s*\\(([^)]*)\\)\\s*REFERENCES\\s+(${QIDENT_SRC})\\s*(?:\\(([^)]*)\\))?`, 'gi');
+    let am;
+    while ((am = alterRegex.exec(sql)) !== null) {
+        const table = results.find(t => t.tableName === lastIdent(am[1]));
+        if (!table) continue;
+        let fm;
+        addFkRegex.lastIndex = 0;
+        while ((fm = addFkRegex.exec(am[2])) !== null) {
+            const cols = parseIdentList(fm[2]);
+            const refCols = fm[4] ? parseIdentList(fm[4]) : [];
+            cols.forEach((col, i) => {
+                table.foreignKeys.push({
+                    name: fm[1] ? unquoteIdent(fm[1]) : null,
+                    column: col,
+                    referencesTable: lastIdent(fm[3]),
+                    referencesColumn: refCols[i] || refCols[0] || null
+                });
+            });
+        }
+    }
+
+    // Hedef sütun verilmemişse hedef tablonun PK'sını (yoksa aynı adlı sütunu) kullan
+    results.forEach(t => t.foreignKeys.forEach(fk => {
+        if (fk.referencesColumn) return;
+        const ref = results.find(r => r.tableName === fk.referencesTable);
+        const refPk = ref && ref.columns.filter(c => c.pk);
+        fk.referencesColumn = (refPk && refPk.length ? refPk[0].name : fk.column);
+    }));
 
     return results;
 }
