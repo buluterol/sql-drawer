@@ -256,188 +256,183 @@ function hasAnyRelationship(table, allTables) {
     return hasOutgoingFK || hasIncomingFK;
 }
 
-// Tablo gruplarını oluşturan yardımcı fonksiyon
-function createTableGroups(parsedTables) {
-    const relatedTables = [];
-    const unrelatedTables = [];
+// ---- Yerleşim: ilişkiye göre kümeleme, çakışmasız ----
 
-    // Önce ilişkili ve ilişkisiz tabloları ayır
-    parsedTables.forEach(table => {
-        if (hasAnyRelationship(table, parsedTables)) {
-            relatedTables.push(table);
-        } else {
-            unrelatedTables.push(table);
+const LAYOUT_GAP = 60;        // tablolar arası en az boşluk
+const LAYOUT_COMP_GAP = 140;  // kümeler arası boşluk
+
+function rectsOverlap(a, b, gap) {
+    return a.x < b.x + b.w + gap && b.x < a.x + a.w + gap &&
+        a.y < b.y + b.h + gap && b.y < a.y + a.h + gap;
+}
+
+// FK'lara göre bağlı bileşenleri bulur (union-find). Yalnızca verilen tablolar arasındaki bağlar sayılır.
+function findComponents(list) {
+    const parent = {};
+    list.forEach(t => { parent[t.tableName] = t.tableName; });
+    const find = x => (parent[x] === x ? x : (parent[x] = find(parent[x])));
+    const edges = [];
+    list.forEach(t => t.foreignKeys.forEach(fk => {
+        if (fk.referencesTable !== t.tableName && parent[fk.referencesTable] !== undefined) {
+            parent[find(t.tableName)] = find(fk.referencesTable);
+            edges.push([t.tableName, fk.referencesTable]);
         }
-    });
+    }));
+    const comps = {};
+    list.forEach(t => { (comps[find(t.tableName)] = comps[find(t.tableName)] || []).push(t.tableName); });
+    return { comps: Object.values(comps), edges };
+}
 
-    const groups = [];
-    const processedTables = new Set();
-
-    // İlişkili tablolar için grup oluştur
-    relatedTables.forEach(table => {
-        if (processedTables.has(table.tableName)) return;
-
-        const group = { mainTable: table, relatedTables: [], isRelated: true };
-        processedTables.add(table.tableName);
-
-        // Bu tabloya referans veren tabloları bul
-        relatedTables.forEach(otherTable => {
-            if (otherTable.tableName !== table.tableName && !processedTables.has(otherTable.tableName)) {
-                const hasReference = otherTable.foreignKeys.some(fk => fk.referencesTable === table.tableName);
-                if (hasReference) {
-                    group.relatedTables.push(otherTable);
-                    processedTables.add(otherTable.tableName);
+// Verilen dikdörtgenleri (x,y,w,h) çakışmayacak şekilde iter; son çare ızgaraya dizer.
+function separateRects(rects, gap) {
+    for (let iter = 0; iter < 800; iter++) {
+        let moved = false;
+        for (let i = 0; i < rects.length; i++) {
+            for (let j = i + 1; j < rects.length; j++) {
+                const a = rects[i], b = rects[j];
+                if (!rectsOverlap(a, b, gap)) continue;
+                moved = true;
+                const dx = (a.x + a.w / 2) - (b.x + b.w / 2);
+                const dy = (a.y + a.h / 2) - (b.y + b.h / 2);
+                const penX = (a.w + b.w) / 2 + gap - Math.abs(dx);
+                const penY = (a.h + b.h) / 2 + gap - Math.abs(dy);
+                if (penX < penY) {
+                    const s = (dx >= 0 ? 1 : -1) * (penX / 2 + 0.5);
+                    a.x += s; b.x -= s;
+                } else {
+                    const s = (dy >= 0 ? 1 : -1) * (penY / 2 + 0.5);
+                    a.y += s; b.y -= s;
                 }
             }
-        });
-
-        groups.push(group);
-    });
-
-    // İşlenmemiş ilişkili tabloları tekil gruplar olarak ekle
-    relatedTables.forEach(table => {
-        if (!processedTables.has(table.tableName)) {
-            groups.push({ mainTable: table, relatedTables: [], isRelated: true });
         }
+        if (!moved) return;
+    }
+    // Garanti: hâlâ çakışma varsa soldan sağa raflara diz
+    const sorted = [...rects].sort((p, q) => p.y - q.y || p.x - q.x);
+    const rowW = Math.max(...rects.map(r => r.w)) * Math.ceil(Math.sqrt(rects.length)) + gap * 4;
+    let x = 0, y = 0, rowH = 0;
+    sorted.forEach(r => {
+        if (x > 0 && x + r.w > rowW) { x = 0; y += rowH + gap; rowH = 0; }
+        r.x = x; r.y = y;
+        x += r.w + gap; rowH = Math.max(rowH, r.h);
+    });
+}
+
+// Tek bir bağlı bileşeni kuvvet-yönlü yerleştirir; sonuç (0,0) köşeli sınır kutusuna kaydırılır.
+function layoutComponent(names, edges, size) {
+    const idx = Object.fromEntries(names.map((n, i) => [n, i]));
+    const myEdges = edges.filter(e => idx[e[0]] !== undefined && idx[e[1]] !== undefined);
+    const degree = {};
+    names.forEach(n => { degree[n] = 0; });
+    myEdges.forEach(e => { degree[e[0]]++; degree[e[1]]++; });
+    // Deterministik başlangıç: dereceye göre sıralı, çember üzerinde
+    const order = [...names].sort((a, b) => degree[b] - degree[a] || (a < b ? -1 : 1));
+    const R = 260 + 120 * names.length;
+    const rects = names.map(n => ({ name: n, w: size[n].w, h: size[n].h, x: 0, y: 0 }));
+    order.forEach((n, i) => {
+        const ang = (2 * Math.PI * i) / order.length;
+        const r = rects[idx[n]];
+        const rad = i === 0 && order.length > 3 ? 0 : R;
+        r.x = Math.cos(ang) * rad - r.w / 2;
+        r.y = Math.sin(ang) * rad - r.h / 2;
     });
 
-    // İlişkisiz tabloları ayrı bir grup olarak ekle
-    if (unrelatedTables.length > 0) {
-        groups.push({
-            mainTable: null,
-            relatedTables: unrelatedTables,
-            isRelated: false,
-            isUnrelatedGroup: true
+    const center = r => [r.x + r.w / 2, r.y + r.h / 2];
+    for (let step = 0; step < 300; step++) {
+        const cool = 1 - step / 300;
+        const force = rects.map(() => [0, 0]);
+        for (let i = 0; i < rects.length; i++) {
+            for (let j = i + 1; j < rects.length; j++) {
+                const [ax, ay] = center(rects[i]), [bx, by] = center(rects[j]);
+                let dx = ax - bx, dy = ay - by;
+                const d = Math.max(Math.hypot(dx, dy), 1);
+                const rep = 6e5 / (d * d);
+                dx /= d; dy /= d;
+                force[i][0] += dx * rep; force[i][1] += dy * rep;
+                force[j][0] -= dx * rep; force[j][1] -= dy * rep;
+            }
+        }
+        myEdges.forEach(([u, v]) => {
+            const i = idx[u], j = idx[v];
+            const [ax, ay] = center(rects[i]), [bx, by] = center(rects[j]);
+            let dx = bx - ax, dy = by - ay;
+            const d = Math.max(Math.hypot(dx, dy), 1);
+            const rest = (Math.hypot(rects[i].w, rects[i].h) + Math.hypot(rects[j].w, rects[j].h)) / 2 * 0.55 + LAYOUT_GAP;
+            const f = 0.05 * (d - rest);
+            dx /= d; dy /= d;
+            force[i][0] += dx * f; force[i][1] += dy * f;
+            force[j][0] -= dx * f; force[j][1] -= dy * f;
+        });
+        rects.forEach((r, i) => {
+            const lim = 60 * cool + 2;
+            r.x += Math.max(-lim, Math.min(lim, force[i][0]));
+            r.y += Math.max(-lim, Math.min(lim, force[i][1]));
         });
     }
 
-    return groups;
+    separateRects(rects, LAYOUT_GAP);
+    return rects;
 }
 
-// Tablo yüksekliğini hesaplayan yardımcı fonksiyon
-function calculateTableHeight(table) {
-    // Eğer tablo DOM'da varsa gerçek yüksekliğini al
-    const tableElement = tables[table.tableName];
-    if (tableElement) {
-        return tableElement.offsetHeight;
-    }
+// Yeni tablolar için konum hesaplar: bağlı kümeler bir arada, ilişkisizler en sonda ızgarada.
+// Dönüş: { tabloAdı: {x, y} } ve gerçek kutu boyutlarına göre çakışma yoktur.
+function calculateTablePositions(newTables, originX, originY) {
+    const size = {};
+    newTables.forEach(t => {
+        const el = tables[t.tableName];
+        // CSS zoom küçüldükçe yazı yüksekliği ~%28'e kadar büyüyebilir; ölçüye pay bırak
+        size[t.tableName] = { w: el.offsetWidth || 420, h: Math.ceil((el.offsetHeight || 200) * 1.15) };
+    });
 
-    // DOM'da yoksa tahmini hesaplama yap
-    const titleHeight = 50; // Table name için
-    const columnHeight = 32; // Her column için (margin + padding dahil)
-    const padding = 30; // Top ve bottom padding
+    const { comps, edges } = findComponents(newTables);
+    const related = comps.filter(c => c.length > 1).sort((a, b) => b.length - a.length || (a[0] < b[0] ? -1 : 1));
+    const loners = comps.filter(c => c.length === 1).map(c => c[0]).sort();
 
-    return titleHeight + (table.columns.length * columnHeight) + padding;
-}
+    const blocks = related.map(names => {
+        const rects = layoutComponent(names, edges, size);
+        const minX = Math.min(...rects.map(r => r.x)), minY = Math.min(...rects.map(r => r.y));
+        rects.forEach(r => { r.x -= minX; r.y -= minY; });
+        return {
+            rects,
+            w: Math.max(...rects.map(r => r.x + r.w)),
+            h: Math.max(...rects.map(r => r.y + r.h))
+        };
+    });
 
-// Gelişmiş yerleştirme algoritması
-function calculateTablePositions(parsedTables) {
-    const positions = {};
-    const tableWidth = 450;
-    const baseTableHeight = 200; // Minimum yükseklik
-    const groupPadding = 200; // Gruplar arası mesafe
-    const horizontalTablePadding = tableWidth; // Yatayda bir tablo genişliği kadar boşluk
-    const verticalTablePadding = 100; // Dikeyde 100px boşluk
-
-    // Ekranın ortasından başlayacak şekilde pozisyon hesapla
-    const viewportWidth = window.innerWidth || 1200;
-    const viewportHeight = window.innerHeight || 800;
-    const startX = Math.max(100, viewportWidth / 4); // En az 100px, yoksa ekranın 1/4'ü
-    const startY = Math.max(100, viewportHeight / 6); // En az 100px, yoksa ekranın 1/6'sı
-
-    const groups = createTableGroups(parsedTables);
-
-    // İlişkili ve ilişkisiz grupları ayır
-    const relatedGroups = groups.filter(group => group.isRelated !== false);
-    const unrelatedGroups = groups.filter(group => group.isUnrelatedGroup === true);
-
-    let currentX = startX;
-    let currentY = startY;
-    let maxGroupHeight = 0;
-    let maxRelatedX = startX; // İlişkili tabloların en sağ noktası
-
-    // Önce ilişkili grupları yerleştir
-    relatedGroups.forEach((group, groupIndex) => {
-        const groupTables = group.mainTable ? [group.mainTable, ...group.relatedTables] : group.relatedTables;
-        const tablesPerRow = 6; // Satır başına 6 tablo (3'ten 6'ya artırıldı)
-        const groupWidth = Math.min(tablesPerRow, groupTables.length) * (tableWidth + horizontalTablePadding);
-
-        // Bu gruptaki satır yüksekliklerini hesapla
+    // İlişkisiz tablolar: tek bir ızgara bloğu
+    if (loners.length) {
+        const cols = Math.ceil(Math.sqrt(loners.length));
+        const cellW = Math.max(...loners.map(n => size[n].w)) + LAYOUT_GAP;
+        const rects = [];
         const rowHeights = [];
-
-        // Her satırdaki en yüksek tabloyu bul
-        for (let row = 0; row < Math.ceil(groupTables.length / tablesPerRow); row++) {
-            let maxRowHeight = baseTableHeight;
-            for (let col = 0; col < tablesPerRow; col++) {
-                const tableIndex = row * tablesPerRow + col;
-                if (tableIndex < groupTables.length) {
-                    const table = groupTables[tableIndex];
-                    const tableHeight = calculateTableHeight(table);
-                    maxRowHeight = Math.max(maxRowHeight, tableHeight);
-                }
-            }
-            rowHeights.push(maxRowHeight);
-        }
-
-        // Grup içindeki tabloları yerleştir
-        groupTables.forEach((table, tableIndex) => {
-            if (!table) return; // mainTable null olabilir
-
-            const row = Math.floor(tableIndex / tablesPerRow);
-            const col = tableIndex % tablesPerRow;
-
-            const x = currentX + col * (tableWidth + horizontalTablePadding);
-
-            // Y pozisyonunu önceki satırların toplam yüksekliği + padding'e göre hesapla
-            let y = currentY;
-            for (let i = 0; i < row; i++) {
-                y += rowHeights[i] + verticalTablePadding;
-            }
-
-            positions[table.tableName] = { x, y };
+        loners.forEach((n, i) => {
+            const row = Math.floor(i / cols);
+            rowHeights[row] = Math.max(rowHeights[row] || 0, size[n].h);
         });
-
-        // Grup yüksekliğini hesapla
-        const totalGroupHeight = rowHeights.reduce((sum, height) => sum + height, 0) +
-            (rowHeights.length - 1) * verticalTablePadding;
-        maxGroupHeight = Math.max(maxGroupHeight, totalGroupHeight);
-
-        // Bir sonraki grup konumunu hesapla
-        currentX += groupWidth + groupPadding;
-        maxRelatedX = Math.max(maxRelatedX, currentX);
-
-        // Eğer çok sağa gittiyse alt satıra geç
-        if (currentX > 4000) { // 2500'den 4000'e artırıldı (6 tablo için daha geniş alan)
-            currentX = startX;
-            currentY += maxGroupHeight + groupPadding;
-            maxGroupHeight = 0;
-        }
-    });
-
-    // İlişkisiz tabloları en sağa yerleştir
-    if (unrelatedGroups.length > 0) {
-        const unrelatedGroup = unrelatedGroups[0];
-        const unrelatedTables = unrelatedGroup.relatedTables;
-
-        // İlişkisiz tablolar için ayrı alan
-        const unrelatedStartX = maxRelatedX + groupPadding * 2; // Ekstra mesafe
-        let unrelatedCurrentX = unrelatedStartX;
-        let unrelatedCurrentY = startY;
-
-        const tablesPerRow = 4; // İlişkisiz tablolar için 2'den 4'e artırıldı
-
-        // İlişkisiz tabloları yerleştir
-        unrelatedTables.forEach((table, index) => {
-            const row = Math.floor(index / tablesPerRow);
-            const col = index % tablesPerRow;
-
-            const x = unrelatedCurrentX + col * (tableWidth + horizontalTablePadding);
-            const y = unrelatedCurrentY + row * (baseTableHeight + verticalTablePadding);
-
-            positions[table.tableName] = { x, y };
+        loners.forEach((n, i) => {
+            const row = Math.floor(i / cols), col = i % cols;
+            let y = 0;
+            for (let r = 0; r < row; r++) y += rowHeights[r] + LAYOUT_GAP;
+            rects.push({ name: n, w: size[n].w, h: size[n].h, x: col * cellW, y });
+        });
+        blocks.push({
+            rects,
+            w: Math.max(...rects.map(r => r.x + r.w)),
+            h: Math.max(...rects.map(r => r.y + r.h))
         });
     }
 
+    // Blokları raflara diz (en büyük blok önce; ilişkisizler son blok olarak kalır)
+    const total = blocks.reduce((s, b) => s + (b.w + LAYOUT_COMP_GAP) * (b.h + LAYOUT_COMP_GAP), 0);
+    const shelfW = Math.max(Math.sqrt(total) * 1.5, ...blocks.map(b => b.w));
+    const positions = {};
+    let x = 0, y = 0, rowH = 0;
+    blocks.forEach(b => {
+        if (x > 0 && x + b.w > shelfW) { x = 0; y += rowH + LAYOUT_COMP_GAP; rowH = 0; }
+        b.rects.forEach(r => { positions[r.name] = { x: originX + x + r.x, y: originY + y + r.y }; });
+        x += b.w + LAYOUT_COMP_GAP;
+        rowH = Math.max(rowH, b.h);
+    });
     return positions;
 }
 
@@ -523,27 +518,63 @@ function visualize() {
         makeDraggable(div);
     });
 
-    // DOM'a eklendikten sonra pozisyonları hesapla ve güncelle
-    setTimeout(() => {
-        const positions = calculateTablePositions(allTables);
+    // Yazı tipleri yüklenip kutu ölçüleri oturduktan sonra yalnızca YENİ tabloları yerleştir (mevcutlar yerinde kalır)
+    const fontsReady = (document.fonts && document.fonts.ready) ? document.fonts.ready : Promise.resolve();
+    fontsReady.then(() => setTimeout(() => {
+        // Başlangıç noktası: mevcut tabloların sağında, yoksa sol üstte
+        let originX = 200, originY = 100;
+        const existing = allTables.filter(t => !newTables.includes(t) && tables[t.tableName]);
+        if (existing.length) {
+            originX = Math.max(...existing.map(t => tables[t.tableName].offsetLeft + tables[t.tableName].offsetWidth)) + LAYOUT_COMP_GAP;
+            originY = Math.min(...existing.map(t => tables[t.tableName].offsetTop));
+        }
 
-        // Tüm tabloların pozisyonlarını güncelle
-        allTables.forEach((table) => {
-            const position = positions[table.tableName];
-            const tableElement = tables[table.tableName];
-            if (tableElement && position) {
-                tableElement.style.left = `${position.x}px`;
-                tableElement.style.top = `${position.y}px`;
+        const positions = calculateTablePositions(newTables, originX, originY);
+        newTables.forEach(table => {
+            const el = tables[table.tableName];
+            const pos = positions[table.tableName];
+            if (el && pos) {
+                el.style.left = `${Math.round(pos.x)}px`;
+                el.style.top = `${Math.round(pos.y)}px`;
             }
         });
+        // Güvence: yerleştirmeden sonra gerçek ölçüleri yeniden al, çakışma varsa ayır
+        const real = newTables.map(t => {
+            const el = tables[t.tableName];
+            return { name: t.tableName, x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight };
+        });
+        if (real.some((a, i) => real.some((b, j) => j > i && rectsOverlap(a, b, LAYOUT_GAP - 1)))) {
+            separateRects(real, LAYOUT_GAP);
+            real.forEach(r => {
+                tables[r.name].style.left = `${Math.round(r.x)}px`;
+                tables[r.name].style.top = `${Math.round(r.y)}px`;
+            });
+        }
+        const maxX = Math.max(...newTables.map(t => tables[t.tableName].offsetLeft + tables[t.tableName].offsetWidth));
+        const maxY = Math.max(...newTables.map(t => tables[t.tableName].offsetTop + tables[t.tableName].offsetHeight));
+        ensureCanvasSize(maxX + 400, maxY + 400);
+        updateUnrelatedState();
 
         drawConnections();
 
         // Tablolar yerleştirildikten sonra otomatik zoom yap
         setTimeout(() => {
             autoFitZoom();
+            // Zoom değişince ölçüler oynayabilir: son bir çakışma denetimi
+            const fin = newTables.map(t => {
+                const el = tables[t.tableName];
+                return { name: t.tableName, x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight };
+            });
+            if (fin.some((a, i) => fin.some((b, j) => j > i && rectsOverlap(a, b, LAYOUT_GAP - 1)))) {
+                separateRects(fin, LAYOUT_GAP);
+                fin.forEach(r => {
+                    tables[r.name].style.left = `${Math.round(r.x)}px`;
+                    tables[r.name].style.top = `${Math.round(r.y)}px`;
+                });
+                drawConnections();
+            }
         }, 100); // Pozisyonların tamamen yerleşmesi için biraz daha bekle
-    }, 10); // DOM render'ının tamamlanması için kısa bir gecikme
+    }, 10)); // DOM render'ının tamamlanması için kısa bir gecikme
 }
 
 // Tüm tabloları gösterecek şekilde otomatik zoom ayarı
