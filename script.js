@@ -994,13 +994,9 @@ function initZoomControls() {
         }
     });
 
-    // Zoom Reset
+    // Zoom Reset - Auto Fit All Tables
     zoomResetBtn.addEventListener('click', () => {
-        currentZoom = 1;
-        applyZoom();
-        // Scroll to center
-        outputWrapper.scrollLeft = (output.scrollWidth - outputWrapper.clientWidth) / 2;
-        outputWrapper.scrollTop = (output.scrollHeight - outputWrapper.clientHeight) / 2;
+        autoFitZoom();
     });
 
     // Mouse wheel zoom
