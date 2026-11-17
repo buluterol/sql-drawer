@@ -2,8 +2,8 @@ let tables = {};
 
 // Zoom değişkenleri
 let currentZoom = 1;
-const minZoom = 0.1;
-const maxZoom = 3;
+const minZoom = 0.05;
+const maxZoom = 4;
 const zoomStep = 0.1;
 
 // Dark mode değişkenleri
@@ -510,7 +510,7 @@ function autoFitZoom() {
     targetZoom = Math.max(minZoom, Math.min(maxZoom, targetZoom));
 
     // 10'un katlarına yuvarla
-    targetZoom = roundToNearestTen(targetZoom);
+    targetZoom = Math.max(minZoom, Math.floor(targetZoom * 100) / 100);
 
     // Zoom'u uygula
     currentZoom = targetZoom;
@@ -538,8 +538,8 @@ function roundToNearestTen(zoom) {
     // 10'un katlarına yuvarla
     const rounded = Math.round(percentage / 10) * 10;
 
-    // Minimum %10, maksimum %300
-    const clamped = Math.max(10, Math.min(300, rounded));
+    // Zoom limitleri
+    const clamped = Math.max(minZoom * 100, Math.min(maxZoom * 100, rounded));
 
     // Tekrar decimal'e çevir
     return clamped / 100;
@@ -682,28 +682,6 @@ function drawConnections() {
         });
     });
 }
-
-
-
-let scale = 1;
-
-document.addEventListener('wheel', function (e) {
-    if (e.ctrlKey) {
-        e.preventDefault();
-        const wrapper = document.getElementById('output');
-
-        if (e.deltaY < 0) {
-            scale += 0.05; // Zoom in
-        } else {
-            scale -= 0.05; // Zoom out
-        }
-
-        scale = Math.min(Math.max(0.2, scale), 3); // Zoom aralığını sınırla
-
-        wrapper.style.zoom = scale; // CSS zoom kullanımı
-        drawConnections(); // Bağlantıları yeniden çiz
-    }
-}, { passive: false });
 
 
 
@@ -999,39 +977,23 @@ function initZoomControls() {
         autoFitZoom();
     });
 
-    // Mouse wheel zoom
-    outputWrapper.addEventListener('wheel', (e) => {
-        if (e.ctrlKey || e.metaKey) {
-            e.preventDefault();
+    // Ctrl (Windows/Linux) / Cmd (Mac) + tekerlek ve trackpad pinch (ctrlKey'li wheel):
+    // imlecin altındaki noktaya doğru zoom. Tarayıcının sayfa zoom'u engellenir.
+    document.addEventListener('wheel', (e) => {
+        if (!(e.ctrlKey || e.metaKey)) return;
+        e.preventDefault();
 
-            const delta = e.deltaY > 0 ? -zoomStep : zoomStep;
-            const newZoom = roundToNearestTen(Math.max(minZoom, Math.min(maxZoom, currentZoom + delta)));
+        let dy = e.deltaY;
+        if (e.deltaMode === 1) dy *= 16; // satır modu (Firefox)
+        else if (e.deltaMode === 2) dy *= 100;
 
-            if (newZoom !== currentZoom) {
-                // Mouse pozisyonunu al
-                const rect = outputWrapper.getBoundingClientRect();
-                const mouseX = e.clientX - rect.left;
-                const mouseY = e.clientY - rect.top;
+        // Trackpad pinch küçük deltalar üretir, fare tekerleği ~100
+        const sensitivity = Math.abs(dy) < 50 ? 0.01 : 0.002;
+        const factor = Math.exp(-Math.max(-150, Math.min(150, dy)) * sensitivity);
+        zoomAt(currentZoom * factor, e.clientX, e.clientY);
+    }, { passive: false });
 
-                // Scroll pozisyonlarını kaydet
-                const scrollX = outputWrapper.scrollLeft;
-                const scrollY = outputWrapper.scrollTop;
-
-                // Zoom uygula
-                const oldZoom = currentZoom;
-                currentZoom = newZoom;
-                applyZoom();
-
-                // CSS zoom ile scroll pozisyon ayarlaması
-                const zoomRatio = newZoom / oldZoom;
-                const newScrollX = scrollX * zoomRatio + (mouseX * (zoomRatio - 1));
-                const newScrollY = scrollY * zoomRatio + (mouseY * (zoomRatio - 1));
-
-                outputWrapper.scrollLeft = newScrollX;
-                outputWrapper.scrollTop = newScrollY;
-            }
-        }
-    });    // Touch zoom for mobile
+    // Touch zoom for mobile
     let initialDistance = 0;
     let initialZoom = 1;
     let isZooming = false;
@@ -1084,12 +1046,52 @@ function initZoomControls() {
     });
 }
 
+// Pan alanı (#output) en az verilen (zoom'suz) boyuta kadar büyür, asla küçülmez
+function ensureCanvasSize(minW, minH) {
+    const output = document.getElementById('output');
+    const curW = parseFloat(output.style.minWidth) || 0;
+    const curH = parseFloat(output.style.minHeight) || 0;
+    const baseW = 8 * window.innerWidth;
+    const baseH = 4 * window.innerHeight;
+    output.style.minWidth = Math.ceil(Math.max(curW, baseW, minW)) + 'px';
+    output.style.minHeight = Math.ceil(Math.max(curH, baseH, minH)) + 'px';
+}
+
+// Zoom'u belirtilen ekran noktası sabit kalacak şekilde değiştirir
+function zoomAt(targetZoom, clientX, clientY) {
+    const outputWrapper = document.getElementById('output-wrapper');
+    const newZoom = Math.round(Math.max(minZoom, Math.min(maxZoom, targetZoom)) * 1000) / 1000;
+    if (newZoom === currentZoom) return;
+
+    const rect = outputWrapper.getBoundingClientRect();
+    const mouseX = clientX - rect.left;
+    const mouseY = clientY - rect.top;
+
+    // İmlecin altındaki içerik noktası (zoom'suz koordinat)
+    const contentX = (outputWrapper.scrollLeft + mouseX) / currentZoom;
+    const contentY = (outputWrapper.scrollTop + mouseY) / currentZoom;
+
+    currentZoom = newZoom;
+    applyZoom();
+
+    // Pan alanı, imlecin altındaki noktayı sabit tutmaya yetecek kadar büyük olsun
+    ensureCanvasSize(contentX + outputWrapper.clientWidth / newZoom, contentY + outputWrapper.clientHeight / newZoom);
+
+    outputWrapper.scrollLeft = contentX * newZoom - mouseX;
+    outputWrapper.scrollTop = contentY * newZoom - mouseY;
+    drawConnections();
+}
+
 function applyZoom() {
     const output = document.getElementById('output');
     const outputWrapper = document.getElementById('output-wrapper');
 
     // CSS zoom kullan - bu şekilde SVG çizgiler bozulmaz
     output.style.zoom = currentZoom;
+
+    // Zoom out'ta pan alanı ekranı her zaman kaplasın
+    ensureCanvasSize(outputWrapper.clientWidth / currentZoom, outputWrapper.clientHeight / currentZoom);
+    if (window.parsedTables) drawConnections(); // çizgiler ekran koordinatıyla çizildiği için zoom sonrası yenile
 
     // Grid background size'ı güncelle
     const gridSize = 100; // Orijinal grid size, zoom otomatik olarak uygular
