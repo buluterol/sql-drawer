@@ -235,6 +235,7 @@ function makeDraggable(element) {
             top: parseFloat(tables[n].style.top) || 0
         }));
         const startX = e.clientX, startY = e.clientY;
+        const before = snapshot();
         let moved = false;
         let raf = 0;
 
@@ -282,6 +283,7 @@ function makeDraggable(element) {
             if (!moved) {
                 if (focusedTable === name) clearHighlight(); else focusTable(name);
             } else {
+                commitUndo(before);
                 drawConnections();
                 saveState();
             }
@@ -686,11 +688,13 @@ function removeTableFromModel(name) {
 }
 
 function clearMarks() {
+    const before = snapshot();
     (window.parsedTables || []).forEach(t => {
         if (t.diff !== 'removed') delete t.diff;
         t.columns.forEach(c => { if (!(c._diff && c._diff.kind === 'removed')) delete c._diff; });
         refreshTableColumns(t);
     });
+    commitUndo(before);
     updateUnrelatedState();
     drawConnections();
     saveState();
@@ -703,7 +707,9 @@ function pendingRemovalCount() {
 
 // Silinmiş işaretli tabloları ve sütunları onayla ve kaldır
 function confirmRemovals() {
+    const before = snapshot();
     finalizeRemovals();
+    commitUndo(before);
     (window.parsedTables || []).forEach(refreshTableColumns);
     updateUnrelatedState();
     drawConnections();
@@ -776,6 +782,7 @@ function visualize() {
     if (parsed.length === 0) { showToast('SQL içinde CREATE TABLE bulunamadı'); return; }
 
     const fresh = window.parsedTables.length === 0;
+    const before = snapshot();
 
     // Önceki içe aktarmadan kalan "silindi" işaretleri bu import ile kesinleşir; işaretler sıfırlanır
     if (!fresh) {
@@ -825,6 +832,7 @@ function visualize() {
 
     const nothing = !change.added.length && !change.removed.length && !change.changed.length;
     if (nothing) {
+        commitUndo(before);
         showToast('Şemada değişiklik yok');
         updateUnrelatedState();
         drawConnections();
@@ -847,6 +855,7 @@ function visualize() {
     fontsReady.then(() => setTimeout(() => {
         if (fresh) placeFresh(newTables);
         else placeIncremental(newTables);
+        commitUndo(before);
         updateUnrelatedState();
         drawConnections();
         renderHistory();
@@ -1697,7 +1706,9 @@ function togglePrimaryKey(tableName, columnName) {
     const table = window.parsedTables.find(t => t.tableName === tableName);
     const col = table && table.columns.find(c => c.name === columnName);
     if (!col) return;
+    const before = snapshot();
     col.pk = !col.pk;
+    commitUndo(before);
     refreshTableColumns(table);
     drawConnections();
     saveState();
@@ -1708,6 +1719,7 @@ function setForeignKey(tableName, columnName, ref) {
     const table = window.parsedTables.find(t => t.tableName === tableName);
     if (!table) return;
 
+    const before = snapshot();
     table.foreignKeys = table.foreignKeys.filter(f => f.column !== columnName);
     if (ref) {
         table.foreignKeys.push({
@@ -1718,6 +1730,7 @@ function setForeignKey(tableName, columnName, ref) {
         });
     }
 
+    commitUndo(before);
     refreshTableColumns(table);
     updateUnrelatedState();
     drawConnections();
@@ -2009,7 +2022,54 @@ function applyZoom() {
 
     zoomInBtn.style.pointerEvents = currentZoom >= maxZoom ? 'none' : 'auto';
     zoomOutBtn.style.pointerEvents = currentZoom <= minZoom ? 'none' : 'auto';
-}// ---- Kalıcılık (localStorage) ve JSON dışa/içe aktarma ----
+}// ---- Geri al / yinele (anlık görüntü yığını; değişiklik geçmişinden ayrı) ----
+const UNDO_LIMIT = 100;
+let undoStack = [], redoStack = [];
+
+function snapshot() {
+    const pos = {};
+    Object.entries(tables).forEach(([n, e]) => { pos[n] = [e.offsetLeft, e.offsetTop]; });
+    return { tables: clone(window.parsedTables || []), pos, history: clone(window.history_ || []) };
+}
+
+// Bir işlemden ÖNCE alınan görüntüyü işlem bitince yığına koyar
+function commitUndo(before) {
+    undoStack.push(before);
+    if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+    redoStack = [];
+}
+
+function applySnapshot(snap) {
+    const w = document.getElementById('output-wrapper');
+    restoreState({ tables: snap.tables, positions: snap.pos, history: snap.history, zoom: currentZoom, scroll: [w.scrollLeft, w.scrollTop] });
+    hideContextMenu();
+    saveState();
+}
+
+function undo() {
+    if (!undoStack.length) { showToast('Geri alınacak işlem yok'); return; }
+    redoStack.push(snapshot());
+    applySnapshot(undoStack.pop());
+    showToast('Geri alındı');
+}
+
+function redo() {
+    if (!redoStack.length) { showToast('Yinelenecek işlem yok'); return; }
+    undoStack.push(snapshot());
+    applySnapshot(redoStack.pop());
+    showToast('Yinelendi');
+}
+
+document.addEventListener('keydown', function (e) {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+    const t = e.target;
+    if (t && t.closest && t.closest('textarea, select, [contenteditable="true"], input:not([type=checkbox]):not([type=radio]):not([type=button]):not([type=range])')) return; // yazarken tarayıcının undo'su
+    const k = e.key.toLowerCase();
+    if (k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+    else if (k === 'y') { e.preventDefault(); redo(); }
+});
+
+// ---- Kalıcılık (localStorage) ve JSON dışa/içe aktarma ----
 const STATE_KEY = 'sqlDrawer.state.v1';
 
 function serializeState() {
