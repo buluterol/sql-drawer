@@ -745,10 +745,29 @@ html {
     color: var(--text-color);
 }
 
-/* Tablo seçimi */
+/* Tablo seçimi (toplu seçim / marquee) */
 .table-box.selected {
-    border-color: #3498db;
-    box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.45), 0 4px 8px rgba(0, 0, 0, 0.1);
+    border-color: #0d6efd;
+    outline: 3px solid rgba(13, 110, 253, 0.55);
+    outline-offset: 3px;
+    box-shadow: 0 0 0 6px rgba(13, 110, 253, 0.12), 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+.marquee {
+    position: fixed;
+    z-index: 60;
+    pointer-events: none;
+    border: 1.5px dashed #0d6efd;
+    background: rgba(13, 110, 253, 0.1);
+    border-radius: 3px;
+}
+
+#output-wrapper.pan-mode, #output-wrapper.pan-mode .table-box {
+    cursor: grab;
+}
+
+#output-wrapper.panning, #output-wrapper.panning .table-box {
+    cursor: grabbing;
 }
 
 /* Dışa aktarma seçenekleri */

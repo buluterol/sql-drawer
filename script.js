@@ -205,81 +205,85 @@ function parseCreateTable(sql) {
     return results;
 }
 
-function makeDraggable(element) {
-    let startX, startY, startLeft, startTop;
-    let dragTimeout;
-    let isDragging = false;
+let spaceDown = false; // Space basılıyken boş alan sürüklemesi pan olur
 
+function makeDraggable(element) {
     element.addEventListener('mousedown', (e) => {
-        // Right click kontrolü
-        if (e.button === 2) return;
+        if (e.button !== 0 || spaceDown) return; // sağ tık: bağlam menüsü; orta/Space: pan (alanın işleyicisi)
+
+        const name = element.id.replace('table-', '');
 
         // Shift/Ctrl/Cmd+tık: tabloyu seçime ekle/çıkar (sürükleme yok)
         if (e.shiftKey || e.ctrlKey || e.metaKey) {
             e.preventDefault();
-            toggleTableSelection(element.id.replace('table-', ''));
+            toggleTableSelection(name);
             return;
         }
 
-        isDragging = true;
-        startX = e.clientX;
-        startY = e.clientY;
-
-        // Doğrudan elementin kendi offsetLeft ve offsetTop'unu al (scale uygulanmamış)
-        startLeft = parseFloat(element.style.left) || 0;
-        startTop = parseFloat(element.style.top) || 0;
-
+        // Seçili tablolardan biri sürükleniyorsa hepsi birlikte taşınır; değilse seçim temizlenir
+        const selected = getSelectedTableNames();
+        let dragNames;
+        if (selected.includes(name)) {
+            dragNames = selected;
+        } else {
+            if (selected.length) clearTableSelection();
+            dragNames = [name];
+        }
+        const items = dragNames.map(n => ({
+            el: tables[n],
+            left: parseFloat(tables[n].style.left) || 0,
+            top: parseFloat(tables[n].style.top) || 0
+        }));
+        const startX = e.clientX, startY = e.clientY;
         let moved = false;
+        let raf = 0;
 
         // Sürükleme sırasında transition'ları devre dışı bırak
-        element.style.transition = 'none';
+        items.forEach(it => { it.el.style.transition = 'none'; });
 
-        document.onmousemove = function (e) {
+        document.onmousemove = function (ev) {
+            if (Math.abs(ev.clientX - startX) + Math.abs(ev.clientY - startY) > 3) moved = true;
+            if (!moved) return;
+
             // Zoom oranını da dikkate al
             const effectiveZoom = currentZoom || 1;
-            const dx = (e.clientX - startX) / effectiveZoom;
-            const dy = (e.clientY - startY) / effectiveZoom;
+            const dx = (ev.clientX - startX) / effectiveZoom;
+            const dy = (ev.clientY - startY) / effectiveZoom;
 
-            if (Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY) > 3) moved = true;
-            let newLeft = startLeft + dx;
-            let newTop = startTop + dy;
-
-            element.style.left = newLeft + 'px';
-            element.style.top = newTop + 'px';
-
-            const buffer = 300;
             const output = document.getElementById('output');
+            const buffer = 300;
+            items.forEach(it => {
+                const newLeft = Math.max(0, it.left + dx);
+                const newTop = Math.max(0, it.top + dy);
+                it.el.style.left = newLeft + 'px';
+                it.el.style.top = newTop + 'px';
 
-            if (newLeft + element.offsetWidth + buffer > output.offsetWidth) {
-                output.style.minWidth = (output.offsetWidth + 1000) + 'px';
-            }
+                if (newLeft + it.el.offsetWidth + buffer > output.offsetWidth) {
+                    output.style.minWidth = (output.offsetWidth + 1000) + 'px';
+                }
+                if (newTop + it.el.offsetHeight + buffer > output.offsetHeight) {
+                    output.style.minHeight = (output.offsetHeight + 1000) + 'px';
+                }
+            });
 
-            if (newTop + element.offsetHeight + buffer > output.offsetHeight) {
-                output.style.minHeight = (output.offsetHeight + 1000) + 'px';
-            }
-
-            drawConnections();
+            // Çizgiler canlı güncellenir (kare başına en çok bir kez)
+            if (!raf) raf = requestAnimationFrame(() => { raf = 0; drawConnections(); });
         };
 
         document.onmouseup = function () {
             document.onmousemove = null;
             document.onmouseup = null;
-            isDragging = false;
+            if (raf) { cancelAnimationFrame(raf); raf = 0; }
+
+            // Transition'ları tekrar etkinleştir
+            items.forEach(it => { it.el.style.transition = ''; });
 
             // Sürükleme olmadan tıklama: odak vurgusu (aynı tabloya tekrar tıklayınca kalkar)
             if (!moved) {
-                const name = element.id.replace('table-', '');
                 if (focusedTable === name) clearHighlight(); else focusTable(name);
+            } else {
+                drawConnections();
             }
-
-            // Transition'ları tekrar etkinleştir
-            element.style.transition = '';
-
-            // Son güncellemeyi garantile
-            if (dragTimeout) {
-                clearTimeout(dragTimeout);
-            }
-            drawConnections();
         };
     });
 
@@ -893,10 +897,99 @@ function drawConnections() {
 
 
 
-// Boş alana tıklayınca tablo seçimini temizle
-document.getElementById('output-wrapper').addEventListener('mousedown', function (e) {
-    if (e.button === 0 && !e.target.closest('.table-box')) clearTableSelection();
-});
+// Boş alan: sürükleyince dikdörtgen (marquee) seçim; orta tuş ya da Space+sürükle ile pan
+(function initCanvasPointer() {
+    const wrapper = document.getElementById('output-wrapper');
+    const isFormTarget = (t) => t && t.closest && t.closest('input, textarea, select, [contenteditable]');
+
+    document.addEventListener('keydown', (e) => {
+        if (e.code === 'Space' && !isFormTarget(e.target) && !document.body.classList.contains('modal-open')) {
+            e.preventDefault();
+            spaceDown = true;
+            wrapper.classList.add('pan-mode');
+        }
+    });
+    document.addEventListener('keyup', (e) => {
+        if (e.code === 'Space') { spaceDown = false; wrapper.classList.remove('pan-mode'); }
+    });
+    window.addEventListener('blur', () => { spaceDown = false; wrapper.classList.remove('pan-mode'); });
+
+    wrapper.addEventListener('mousedown', function (e) {
+        if (e.target.closest('.table-box')) {
+            // Space/orta tuş tablonun üstündeyken de pan olsun
+            if (!(e.button === 1 || (e.button === 0 && spaceDown))) return;
+        }
+        const wr = wrapper.getBoundingClientRect();
+        // Kaydırma çubuğu tıklamaları dokunulmaz
+        if (e.clientX - wr.left > wrapper.clientWidth || e.clientY - wr.top > wrapper.clientHeight) return;
+
+        // Pan
+        if (e.button === 1 || (e.button === 0 && spaceDown)) {
+            e.preventDefault();
+            const sx = e.clientX, sy = e.clientY, sl = wrapper.scrollLeft, st = wrapper.scrollTop;
+            wrapper.classList.add('panning');
+            document.onmousemove = (ev) => {
+                wrapper.scrollLeft = sl - (ev.clientX - sx);
+                wrapper.scrollTop = st - (ev.clientY - sy);
+            };
+            document.onmouseup = () => {
+                document.onmousemove = null;
+                document.onmouseup = null;
+                wrapper.classList.remove('panning');
+            };
+            return;
+        }
+        if (e.button !== 0) return;
+
+        // Marquee seçim
+        const additive = e.shiftKey || e.ctrlKey || e.metaKey;
+        const base = additive ? getSelectedTableNames() : [];
+        const sx = e.clientX, sy = e.clientY;
+        let box = null;
+        e.preventDefault(); // metin seçimini engelle
+
+        document.onmousemove = (ev) => {
+            if (!box) {
+                if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) <= 3) return;
+                box = document.createElement('div');
+                box.className = 'marquee';
+                document.body.appendChild(box);
+            }
+            const x1 = Math.min(sx, ev.clientX), y1 = Math.min(sy, ev.clientY);
+            const x2 = Math.max(sx, ev.clientX), y2 = Math.max(sy, ev.clientY);
+            box.style.left = x1 + 'px';
+            box.style.top = y1 + 'px';
+            box.style.width = (x2 - x1) + 'px';
+            box.style.height = (y2 - y1) + 'px';
+            Object.entries(tables).forEach(([name, el]) => {
+                const r = el.getBoundingClientRect();
+                const hit = r.left < x2 && r.right > x1 && r.top < y2 && r.bottom > y1;
+                el.classList.toggle('selected', hit || base.includes(name));
+            });
+        };
+        document.onmouseup = () => {
+            document.onmousemove = null;
+            document.onmouseup = null;
+            if (box) {
+                box.remove();
+            } else if (!additive) {
+                // Boş alana tıklama: seçimi ve odağı temizle
+                clearTableSelection();
+                clearHighlight();
+            }
+        };
+    });
+
+    // Cmd/Ctrl+A: tüm tabloları seç
+    document.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'a'
+            && !isFormTarget(e.target) && !document.body.classList.contains('modal-open')
+            && !document.getElementById('export-popup')) {
+            e.preventDefault();
+            Object.values(tables).forEach(el => el.classList.add('selected'));
+        }
+    });
+})();
 
 document.getElementById('output-wrapper').addEventListener('scroll', function (e) {
     const wrapper = e.target;
@@ -1396,6 +1489,7 @@ document.addEventListener('click', function (e) {
 // ESC tuşu ile highlight'ı temizle
 document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
+        clearTableSelection();
         clearHighlight();
         hideContextMenu();
     }
