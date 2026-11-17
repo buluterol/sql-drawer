@@ -54,46 +54,95 @@ function disableDarkMode() {
     toggleBtn.title = 'Dark Mode';
 }
 
-function parseCreateTable(sql) {
-    const createTableRegex = /CREATE TABLE [`"]?(\w+)[`"]? \((.*?)\) ENGINE=/gis;
-    const foreignKeyRegex = /CONSTRAINT [`"]?(\w+)[`"]? FOREIGN KEY \([`"]?(\w+)[`"]?\) REFERENCES [`"]?(\w+)[`"]? \([`"]?(\w+)[`"]?\)/gi;
+// Parantez derinliği 0'daki virgüllerden böler (decimal(10,2), PRIMARY KEY (a,b) bozulmaz)
+function splitDefinitions(body) {
+    const parts = [];
+    let depth = 0, current = '';
+    for (const ch of body) {
+        if (ch === '(') depth++;
+        else if (ch === ')') depth--;
+        if (ch === ',' && depth === 0) {
+            parts.push(current.trim());
+            current = '';
+        } else {
+            current += ch;
+        }
+    }
+    if (current.trim()) parts.push(current.trim());
+    return parts;
+}
 
-    let match;
+function parseIdentList(str) {
+    return str.split(',').map(x => x.trim().replace(/^[`"\[]|[`"\]]$/g, '')).filter(Boolean);
+}
+
+// CREATE TABLE sorgularını ayrıştırır.
+// Tablo: { tableName, columns: [{name, type, pk}], foreignKeys: [{name, column, referencesTable, referencesColumn}] }
+// Bileşik FK, aynı `name` ile sütun çifti başına bir kayıt olarak tutulur.
+function parseCreateTable(sql) {
+    const createTableRegex = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)[`"]?\s*\(([\s\S]*?)\)\s*(?:ENGINE\b|;|$)/gi;
+    const pkRegex = /^PRIMARY\s+KEY\s*\(([^)]*)\)/i;
+    const fkRegex = /^(?:CONSTRAINT\s+[`"]?(\w+)[`"]?\s+)?FOREIGN\s+KEY\s*\(([^)]*)\)\s*REFERENCES\s+[`"]?(\w+)[`"]?\s*\(([^)]*)\)/i;
+    const skipRegex = /^(?:UNIQUE|KEY|INDEX|FULLTEXT|SPATIAL|CHECK|CONSTRAINT)\b/i;
+
     const results = [];
+    let match;
 
     while ((match = createTableRegex.exec(sql)) !== null) {
-        const tableName = match[1];
-        const columnsSection = match[2];
+        const table = { tableName: match[1], columns: [], foreignKeys: [] };
+        const tablePk = [];
 
-        const lines = columnsSection.split(/,(?![^\(]*\))/).map(line => line.trim());
-        const columns = [];
+        splitDefinitions(match[2]).forEach(line => {
+            let m;
+            if ((m = line.match(pkRegex))) {
+                tablePk.push(...parseIdentList(m[1]));
+            } else if ((m = line.match(fkRegex))) {
+                const cols = parseIdentList(m[2]);
+                const refCols = parseIdentList(m[4]);
+                cols.forEach((col, i) => {
+                    table.foreignKeys.push({
+                        name: m[1] || null,
+                        column: col,
+                        referencesTable: m[3],
+                        referencesColumn: refCols[i] || refCols[0]
+                    });
+                });
+            } else if (!skipRegex.test(line)) {
+                const colMatch = line.match(/^[`"]?(\w+)[`"]?\s+([\s\S]+)$/);
+                if (!colMatch) return;
+                let type = colMatch[2].replace(/\s+/g, ' ').trim();
+                let pk = false;
 
-        lines.forEach(line => {
-            if (line.startsWith('PRIMARY KEY') || line.startsWith('UNIQUE KEY') || line.startsWith('KEY')) return;
-
-            const colMatch = line.match(/[`"]?(\w+)[`"]?\s+([^\r,]+)/);
-            if (colMatch) {
-                columns.push({ name: colMatch[1], type: colMatch[2] });
+                // Sütun içi PRIMARY KEY / REFERENCES
+                if (/\bPRIMARY\s+KEY\b/i.test(type)) {
+                    pk = true;
+                    type = type.replace(/\s*\bPRIMARY\s+KEY\b/i, '');
+                }
+                const refMatch = type.match(/\s*\bREFERENCES\s+[`"]?(\w+)[`"]?\s*\(([^)]*)\)/i);
+                if (refMatch) {
+                    table.foreignKeys.push({
+                        name: null,
+                        column: colMatch[1],
+                        referencesTable: refMatch[1],
+                        referencesColumn: parseIdentList(refMatch[2])[0]
+                    });
+                    type = type.replace(refMatch[0], '');
+                }
+                table.columns.push({ name: colMatch[1], type: type.trim(), pk });
             }
         });
 
-        results.push({ tableName, columns, foreignKeys: [] });
-    }
+        tablePk.forEach(name => {
+            const col = table.columns.find(c => c.name === name);
+            if (col) col.pk = true;
+        });
 
-    let fkMatch;
-    while ((fkMatch = foreignKeyRegex.exec(sql)) !== null) {
-        const sourceTable = results.find(t => t.columns.some(c => c.name === fkMatch[2]));
-        if (sourceTable) {
-            sourceTable.foreignKeys.push({
-                column: fkMatch[2],
-                referencesTable: fkMatch[3],
-                referencesColumn: fkMatch[4]
-            });
-        }
+        results.push(table);
     }
 
     return results;
 }
+
 function makeDraggable(element) {
     let startX, startY, startLeft, startTop;
     let dragTimeout;
@@ -384,6 +433,40 @@ function calculateTablePositions(parsedTables) {
     return positions;
 }
 
+// Sütun satırını (PK/FK rozetleriyle) oluşturur
+function buildColumnElement(table, col) {
+    const colDiv = document.createElement('div');
+    colDiv.className = 'column';
+    colDiv.id = `${table.tableName}-${col.name}`;
+    colDiv.dataset.column = col.name;
+
+    const fk = table.foreignKeys.find(f => f.column === col.name);
+    if (col.pk) {
+        const badge = document.createElement('span');
+        badge.className = 'col-badge col-badge-pk';
+        badge.textContent = 'PK';
+        colDiv.appendChild(badge);
+    }
+    if (fk) {
+        const badge = document.createElement('span');
+        badge.className = 'col-badge col-badge-fk';
+        badge.textContent = 'FK';
+        badge.title = `→ ${fk.referencesTable}.${fk.referencesColumn}`;
+        colDiv.appendChild(badge);
+    }
+
+    colDiv.appendChild(document.createTextNode(`${col.name} (${col.type})`));
+    return colDiv;
+}
+
+// Bir tablonun sütunlarını modelden yeniden çizer (PK/FK değişince)
+function refreshTableColumns(table) {
+    const div = tables[table.tableName];
+    if (!div) return;
+    div.querySelectorAll('.column').forEach(el => el.remove());
+    table.columns.forEach(col => div.appendChild(buildColumnElement(table, col)));
+}
+
 function visualize() {
     const sql = document.getElementById('sqlInput').value;
     const parsedTables = parseCreateTable(sql);
@@ -424,13 +507,7 @@ function visualize() {
         title.innerText = table.tableName;
         div.appendChild(title);
 
-        table.columns.forEach(col => {
-            const colDiv = document.createElement('div');
-            colDiv.className = 'column';
-            colDiv.id = `${table.tableName}-${col.name}`;
-            colDiv.innerText = `${col.name} (${col.type})`;
-            div.appendChild(colDiv);
-        });
+        table.columns.forEach(col => div.appendChild(buildColumnElement(table, col)));
 
         document.getElementById('canvas').appendChild(div);
         tables[table.tableName] = div;

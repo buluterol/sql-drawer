@@ -689,3 +689,25 @@ html {
 .export-sql-textarea::-webkit-scrollbar-thumb:hover {
     background: var(--scrollbar-thumb-hover);
 }
+
+/* PK / FK rozetleri */
+.col-badge {
+    display: inline-block;
+    margin-right: 6px;
+    padding: 0 5px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 16px;
+    letter-spacing: 0.5px;
+    color: #fff;
+    vertical-align: 1px;
+}
+
+.col-badge-pk {
+    background: #f39c12;
+}
+
+.col-badge-fk {
+    background: #3498db;
+}
