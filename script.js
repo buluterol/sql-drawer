@@ -624,6 +624,7 @@ function createTableElement(table, x, y) {
     tables[table.tableName] = div;
     table.columns.forEach(col => div.appendChild(buildColumnElement(table, col)));
     makeDraggable(div);
+    div.addEventListener('dblclick', e => { e.preventDefault(); openEditPanel(table.tableName); });
     applyTableMarks(table);
     return div;
 }
@@ -1844,6 +1845,7 @@ document.addEventListener('keydown', function (e) {
         clearTableSelection();
         clearHighlight();
         hideContextMenu();
+        closeEditPanel();
     }
 });
 
@@ -2022,7 +2024,172 @@ function applyZoom() {
 
     zoomInBtn.style.pointerEvents = currentZoom >= maxZoom ? 'none' : 'auto';
     zoomOutBtn.style.pointerEvents = currentZoom <= minZoom ? 'none' : 'auto';
-}// ---- Geri al / yinele (anlık görüntü yığını; değişiklik geçmişinden ayrı) ----
+}// ---- Madde 9: tablo düzenleme paneli ve elle ekleme/silme ----
+let editingTable = null;
+
+function esc(v) { return String(v == null ? '' : v).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+function closeEditPanel() {
+    const p = document.getElementById('edit-panel');
+    if (p) p.remove();
+    editingTable = null;
+}
+
+function editRowHTML(c, fk) {
+    const pt = parseColType(c.type);
+    return `<div class="ep-col">
+        <div class="ep-row">
+            <input class="ep-name" placeholder="ad" value="${esc(c.name)}">
+            <input class="ep-base" placeholder="tip, örn. ENUM('a','b')" value="${esc(pt.base)}" title="${esc(pt.base)}">
+        </div>
+        <div class="ep-row ep-small">
+            <label><input type="checkbox" class="ep-nn" ${pt.notNull ? 'checked' : ''}> NOT NULL</label>
+            <label><input type="checkbox" class="ep-pk" ${c.pk ? 'checked' : ''}> PK</label>
+            <input class="ep-def" placeholder="varsayılan" value="${esc(pt.def)}">
+        </div>
+        <div class="ep-row ep-small">
+            <input class="ep-fk" placeholder="FK: tablo.sütun" value="${fk ? esc(fk.referencesTable + '.' + fk.referencesColumn) : ''}">
+            <input class="ep-extra" placeholder="diğer (AUTO_INCREMENT...)" value="${esc(pt.extra)}">
+            <button type="button" class="ep-btn" data-act="up" title="Yukarı">↑</button>
+            <button type="button" class="ep-btn" data-act="down" title="Aşağı">↓</button>
+            <button type="button" class="ep-btn ep-del" data-act="del" title="Sütunu sil">×</button>
+        </div>
+    </div>`;
+}
+
+function openEditPanel(name) {
+    const t = window.parsedTables.find(x => x.tableName === name);
+    if (!t) return;
+    closeEditPanel();
+    editingTable = name;
+    const p = document.createElement('div');
+    p.id = 'edit-panel';
+    p.innerHTML = `<div class="ep-top"><strong>Tabloyu düzenle</strong><button type="button" class="hist-x" data-act="close" title="Kapat">&times;</button></div>
+        <div class="ep-body">
+            <label class="ep-lbl">Tablo adı</label>
+            <input class="ep-tname" value="${esc(t.tableName)}">
+            <label class="ep-lbl">Sütunlar</label>
+            <div class="ep-cols">${t.columns.map(c => editRowHTML(c, t.foreignKeys.find(f => f.column === c.name))).join('')}</div>
+            <button type="button" class="btn btn-sm btn-outline-secondary" data-act="addcol">+ Sütun ekle</button>
+        </div>
+        <div class="ep-foot">
+            <button type="button" class="btn btn-sm btn-outline-danger me-auto" data-act="deltable">Tabloyu sil</button>
+            <button type="button" class="btn btn-sm btn-secondary" data-act="close">Vazgeç</button>
+            <button type="button" class="btn btn-sm btn-primary" data-act="apply">Uygula</button>
+        </div>`;
+    p.addEventListener('click', e => {
+        const b = e.target.closest('[data-act]');
+        if (!b) return;
+        const act = b.dataset.act, row = b.closest('.ep-col'), cols = p.querySelector('.ep-cols');
+        if (act === 'close') closeEditPanel();
+        else if (act === 'addcol') { cols.insertAdjacentHTML('beforeend', editRowHTML({ name: '', type: 'INT' }, null)); cols.lastElementChild.querySelector('.ep-name').focus(); }
+        else if (act === 'del') row.remove();
+        else if (act === 'up' && row.previousElementSibling) cols.insertBefore(row, row.previousElementSibling);
+        else if (act === 'down' && row.nextElementSibling) cols.insertBefore(row.nextElementSibling, row);
+        else if (act === 'apply') applyEditPanel();
+        else if (act === 'deltable') { const n = editingTable; closeEditPanel(); deleteTableManual(n); }
+    });
+    document.body.appendChild(p);
+}
+
+function applyEditPanel() {
+    const p = document.getElementById('edit-panel');
+    if (!p || !editingTable) return;
+    const old = window.parsedTables.find(x => x.tableName === editingTable);
+    const newName = p.querySelector('.ep-tname').value.trim();
+    if (!newName) { showToast('Tablo adı boş olamaz'); return; }
+    if (newName !== old.tableName && window.parsedTables.some(x => x.tableName === newName)) { showToast('Bu adda tablo var'); return; }
+    const cols = [], fks = [], seen = new Set();
+    for (const row of p.querySelectorAll('.ep-col')) {
+        const name = row.querySelector('.ep-name').value.trim();
+        if (!name) continue;
+        if (seen.has(name)) { showToast(`Yinelenen sütun: ${name}`); return; }
+        seen.add(name);
+        const type = composeColType({
+            base: row.querySelector('.ep-base').value.trim() || 'INT',
+            notNull: row.querySelector('.ep-nn').checked,
+            def: row.querySelector('.ep-def').value.trim(),
+            extra: row.querySelector('.ep-extra').value.trim()
+        });
+        const c = { name, type, pk: row.querySelector('.ep-pk').checked };
+        const prev = old.columns.find(x => x.name === name);
+        if (prev && prev._diff) c._diff = prev._diff;
+        cols.push(c);
+        const fk = row.querySelector('.ep-fk').value.trim();
+        const m = fk.match(/^([^.\s]+)\.([^.\s]+)$/);
+        if (m) fks.push({ name: `fk_${newName}_${name}`, column: name, referencesTable: m[1] === old.tableName ? newName : m[1], referencesColumn: m[2] });
+    }
+    if (!cols.length) { showToast('En az bir sütun gerekli'); return; }
+    const before = snapshot();
+    const n = { tableName: newName, columns: cols, foreignKeys: fks };
+    if (old.diff) n.diff = old.diff;
+    const cmp = compareTable(old, n);
+    const items = cmp.items.filter(i => i.k !== 'del' || true);
+    if (newName !== old.tableName) items.unshift({ k: 'chg', t: `~ tablo adı: ${old.tableName} → ${newName}` });
+    const el = tables[old.tableName];
+    const x = el.offsetLeft, y = el.offsetTop;
+    // Modeli güncelle
+    const idx = window.parsedTables.indexOf(old);
+    window.parsedTables[idx] = n;
+    if (newName !== old.tableName) {
+        window.parsedTables.forEach(t => t.foreignKeys.forEach(f => { if (f.referencesTable === old.tableName) f.referencesTable = newName; }));
+    }
+    el.remove(); delete tables[old.tableName];
+    if (focusedTable === old.tableName) focusedTable = newName;
+    createTableElement(n, x, y);
+    if (items.length) recordVersion('manual', { added: [], removed: [], changed: [{ table: newName, items }] });
+    commitUndo(before);
+    closeEditPanel();
+    updateUnrelatedState();
+    drawConnections();
+    saveState();
+    renderHistory();
+    showToast(items.length ? 'Düzenleme uygulandı' : 'Değişiklik yok');
+}
+
+function deleteTableManual(name) {
+    const t = window.parsedTables.find(x => x.tableName === name);
+    if (!t) return;
+    const before = snapshot();
+    recordVersion('manual', { added: [], removed: [{ table: name, cols: t.columns.length }], changed: [] });
+    removeTableFromModel(name);
+    commitUndo(before);
+    updateUnrelatedState();
+    drawConnections();
+    saveState();
+    renderHistory();
+    showToast(`${name} silindi`);
+}
+
+function addTableManual() {
+    const w = document.getElementById('output-wrapper');
+    let n = 1;
+    while (window.parsedTables.some(t => t.tableName === 'yeni_tablo' + (n > 1 ? '_' + n : ''))) n++;
+    const name = 'yeni_tablo' + (n > 1 ? '_' + n : '');
+    const before = snapshot();
+    const t = { tableName: name, columns: [{ name: 'id', type: 'INT NOT NULL', pk: true }], foreignKeys: [] };
+    const x = Math.round((w.scrollLeft + w.clientWidth / 2) / currentZoom - 210);
+    const y = Math.round((w.scrollTop + w.clientHeight / 2) / currentZoom - 60);
+    createTableElement(t, Math.max(0, x), Math.max(0, y));
+    window.parsedTables.push(t);
+    const el = tables[name];
+    const others = Object.keys(tables).filter(k => k !== name).map(rectOf);
+    const me = rectOf(name);
+    const overlap = others.some(o => me.x < o.x + o.w + 20 && o.x < me.x + me.w + 20 && me.y < o.y + o.h + 20 && o.y < me.y + me.h + 20);
+    const spot = overlap ? freeSpotNear(el, [me], others, 30) : null;
+    if (spot) { el.style.left = spot.x + 'px'; el.style.top = spot.y + 'px'; }
+    t.diff = 'added';
+    applyTableMarks(t);
+    recordVersion('manual', { added: [{ table: name, cols: 1 }], removed: [], changed: [] });
+    commitUndo(before);
+    updateUnrelatedState();
+    drawConnections();
+    saveState();
+    renderHistory();
+    openEditPanel(name);
+}
+
+// ---- Geri al / yinele (anlık görüntü yığını; değişiklik geçmişinden ayrı) ----
 const UNDO_LIMIT = 100;
 let undoStack = [], redoStack = [];
 
