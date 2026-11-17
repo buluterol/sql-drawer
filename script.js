@@ -758,7 +758,8 @@ function roundToNearestTen(zoom) {
 
 function drawConnections() {
     const svg = document.getElementById('connections');
-    svg.innerHTML = '';
+    // <defs> (ok ucu) korunur; yalnız çizgiler yenilenir
+    Array.from(svg.children).forEach(c => { if (c.tagName.toLowerCase() !== 'defs') c.remove(); });
 
     // Highlight durumunu kontrol et - highlighted tablolar var mı?
     const highlightedElements = document.querySelectorAll('.table-box.highlighted');
