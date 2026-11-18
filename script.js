@@ -59,10 +59,16 @@ function disableDarkMode() {
 function splitDefinitions(body) {
     const parts = [];
     let depth = 0, current = '';
-    for (const ch of body) {
-        if (ch === '(') depth++;
+    let q = null;
+    for (let i = 0; i < body.length; i++) {
+        const ch = body[i];
+        if (q) {
+            if (ch === '\\' && q !== '`') { current += ch + (body[++i] || ''); continue; }
+            if (ch === q) q = null;
+        } else if (ch === "'" || ch === '"' || ch === '`') q = ch;
+        else if (ch === '(') depth++;
         else if (ch === ')') depth--;
-        if (ch === ',' && depth === 0) {
+        if (!q && ch === ',' && depth === 0) {
             parts.push(current.trim());
             current = '';
         } else {
@@ -2057,20 +2063,223 @@ function editRowHTML(c, fk) {
     </div>`;
 }
 
-function openEditPanel(name) {
+// ---- Madde 13: SQL sekmesi ----
+function tableToSQL(t) {
+    const cols = t.columns.filter(c => !(c._diff && c._diff.kind === 'removed'));
+    const lines = cols.map(c => `  ${qid(c.name)} ${c.type}`.trimEnd());
+    const pks = cols.filter(c => c.pk).map(c => qid(c.name));
+    if (pks.length) lines.push(`  PRIMARY KEY (${pks.join(', ')})`);
+    groupForeignKeys(t).forEach(g => lines.push('  ' + fkClause(g)));
+    return `CREATE TABLE ${qid(t.tableName)} (\n${lines.join(',\n')}\n);`;
+}
+
+const SQL_KW = 'CREATE|TABLE|IF|NOT|EXISTS|NULL|DEFAULT|PRIMARY|KEY|FOREIGN|REFERENCES|CONSTRAINT|UNIQUE|INDEX|AUTO_INCREMENT|UNSIGNED|ON|DELETE|UPDATE|CASCADE|RESTRICT|SET|NO|ACTION|ENGINE|CHARSET|COLLATE|COMMENT|CHECK|AUTOINCREMENT|GENERATED|ALWAYS|AS|IDENTITY|CURRENT_TIMESTAMP';
+const SQL_TYPES = 'INT|INTEGER|BIGINT|SMALLINT|TINYINT|MEDIUMINT|DECIMAL|NUMERIC|FLOAT|DOUBLE|REAL|BOOLEAN|BOOL|BIT|CHAR|VARCHAR|TEXT|TINYTEXT|MEDIUMTEXT|LONGTEXT|BLOB|LONGBLOB|DATE|TIME|DATETIME|TIMESTAMP|YEAR|JSON|ENUM|UUID|SERIAL|BIGSERIAL|BYTEA|TIMESTAMPTZ';
+const SQL_HL_RE = new RegExp(`(--[^\\n]*|/\\*[\\s\\S]*?(?:\\*/|$))|('(?:[^'\\\\]|\\\\.|'')*'?|"(?:[^"\\\\]|\\\\.)*"?)|(\`[^\`\\n]*\`?)|\\b(${SQL_TYPES})\\b|\\b(${SQL_KW})\\b|\\b(\\d+(?:\\.\\d+)?)\\b`, 'gi');
+
+function highlightSQL(text) {
+    let out = '', last = 0, m;
+    SQL_HL_RE.lastIndex = 0;
+    while ((m = SQL_HL_RE.exec(text)) !== null) {
+        if (m[0] === '') { SQL_HL_RE.lastIndex++; continue; }
+        out += esc(text.slice(last, m.index));
+        const cls = m[1] ? 'c' : m[2] ? 's' : m[3] ? 'i' : m[4] ? 't' : m[5] ? 'k' : 'n';
+        out += `<span class="sq-${cls}">${esc(m[0])}</span>`;
+        last = m.index + m[0].length;
+    }
+    return out + esc(text.slice(last)) + '\n';
+}
+
+function lineColOf(text, pos) {
+    const before = text.slice(0, pos);
+    const line = before.split('\n').length;
+    return { line, col: pos - before.lastIndexOf('\n'), pos };
+}
+
+// Metni doğrular ve tek CREATE TABLE'ı ayrıştırır: {table} ya da {error:{msg,line,col,pos}}
+function parseTableSQL(raw) {
+    const fail = (pos, msg) => ({ error: { msg, ...lineColOf(raw, Math.max(0, Math.min(pos, raw.length))) } });
+    // Yorumları aynı uzunlukta boşlukla değiştir (konumlar korunur); metin içindekilere dokunma
+    let text = '', i = 0;
+    while (i < raw.length) {
+        const ch = raw[i];
+        if (ch === "'" || ch === '"' || ch === '`') {
+            let j = i + 1;
+            while (j < raw.length && raw[j] !== ch) { if (raw[j] === '\\' && ch !== '`') j++; j++; }
+            if (j >= raw.length) return fail(i, 'Kapanmamış tırnak');
+            text += raw.slice(i, j + 1); i = j + 1;
+        } else if (ch === '-' && raw[i + 1] === '-') {
+            let j = raw.indexOf('\n', i); if (j < 0) j = raw.length;
+            text += ' '.repeat(j - i); i = j;
+        } else if (ch === '/' && raw[i + 1] === '*') {
+            let j = raw.indexOf('*/', i + 2);
+            if (j < 0) return fail(i, 'Kapanmamış yorum (/* ... */)');
+            text += raw.slice(i, j + 2).replace(/[^\n]/g, ' '); i = j + 2;
+        } else { text += ch; i++; }
+    }
+    if (!text.trim()) return fail(0, 'SQL boş');
+    const head = new RegExp(`CREATE\\s+(?:(?:GLOBAL\\s+|LOCAL\\s+)?(?:TEMPORARY|TEMP)\\s+|UNLOGGED\\s+)?TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(${QIDENT_SRC})\\s*\\(`, 'gi');
+    const hm = head.exec(text);
+    if (!hm) return fail(text.search(/\S/), 'CREATE TABLE ad ( ... ) biçimi bulunamadı');
+    if (text.slice(0, hm.index).trim()) return fail(text.search(/\S/), 'CREATE TABLE öncesinde beklenmeyen metin');
+    const start = hm.index + hm[0].length;
+    // Eşleşen kapanış parantezi (tırnaklar atlanır)
+    let depth = 1, end = start, q = null;
+    for (; end < text.length && depth > 0; end++) {
+        const ch = text[end];
+        if (q) { if (ch === '\\' && q !== '`') end++; else if (ch === q) q = null; }
+        else if (ch === "'" || ch === '"' || ch === '`') q = ch;
+        else if (ch === '(') depth++;
+        else if (ch === ')') depth--;
+    }
+    if (depth > 0) return fail(start - 1, 'Kapanmamış parantez: tablo gövdesi ")" ile bitmeli');
+    const body = text.slice(start, end - 1);
+    const tail = text.slice(end);
+    if (/\bCREATE\s+TABLE\b/i.test(tail)) return fail(end + tail.search(/\bCREATE\s+TABLE\b/i), 'Yalnızca tek bir CREATE TABLE düzenlenebilir');
+    const tm = tail.match(/^[\w\s=,'"`.\-]*;?\s*$/);
+    if (!tm) return fail(end + tail.search(/[^\w\s=,'"`.\-]/), 'Tablo tanımından sonra beklenmeyen karakter');
+    // Tanımları konumlarıyla ayır
+    const defs = [];
+    { let d = 0, cur = start, qq = null;
+      for (let k = start; k <= end - 1; k++) {
+        const ch = k < end - 1 ? text[k] : ',';
+        if (qq) { if (ch === '\\' && qq !== '`') k++; else if (ch === qq) qq = null; continue; }
+        if (ch === "'" || ch === '"' || ch === '`') qq = ch;
+        else if (ch === '(') d++;
+        else if (ch === ')') d--;
+        else if (ch === ',' && d === 0) { defs.push({ s: cur, e: k }); cur = k + 1; }
+      } }
+    const pkRe = /^(?:CONSTRAINT\s+\S+\s+)?PRIMARY\s+KEY\s*\(([^)]*)\)/i;
+    const fkRe = new RegExp(`^(?:CONSTRAINT\\s+${IDENT_SRC}\\s+)?FOREIGN\\s+KEY\\s*\\(([^)]*)\\)\\s*REFERENCES\\s+${QIDENT_SRC}`, 'i');
+    const skipRe = /^(?:UNIQUE|KEY|INDEX|FULLTEXT|SPATIAL|CHECK|CONSTRAINT|EXCLUDE|LIKE)\b/i;
+    const colRe = new RegExp(`^${IDENT_SRC}\\s+\\S`);
+    let colCount = 0;
+    for (let n = 0; n < defs.length; n++) {
+        const seg = text.slice(defs[n].s, defs[n].e);
+        const lead = seg.length - seg.trimStart().length;
+        const pos = defs[n].s + lead, line = seg.trim();
+        if (!line) { if (defs.length === 1 && n === 0) return fail(start, 'Tablo gövdesi boş'); return fail(defs[n].s, 'Boş tanım (fazladan virgül?)'); }
+        if (pkRe.test(line) || skipRe.test(line)) continue;
+        if (/^(?:CONSTRAINT\s+\S+\s+)?FOREIGN\b/i.test(line)) { if (!fkRe.test(line)) return fail(pos, 'FOREIGN KEY (sütun) REFERENCES tablo [(sütun)] biçimi bekleniyordu'); continue; }
+        if (!colRe.test(line)) return fail(pos, `"${line.split(/\s/)[0]}" için sütun tipi eksik`);
+        colCount++;
+    }
+    if (!colCount) return fail(start, 'En az bir sütun gerekli');
+    const parsed = parseCreateTable(text.slice(hm.index, end));
+    if (parsed.length !== 1) return fail(hm.index, 'Tablo ayrıştırılamadı');
+    const t = parsed[0];
+    const seen = new Set();
+    for (const c of t.columns) {
+        if (seen.has(c.name)) { const at = text.indexOf(c.name, start); return fail(at < 0 ? start : at, `Yinelenen sütun: ${c.name}`); }
+        seen.add(c.name);
+    }
+    for (const f of t.foreignKeys) {
+        if (!seen.has(f.column)) { const at = text.search(new RegExp('FOREIGN\\s+KEY\\s*\\([^)]*' + f.column.replace(/\W/g, '.') )); return fail(at < 0 ? start : at, `FOREIGN KEY sütunu tabloda yok: ${f.column}`); }
+    }
+    const pkNames = (text.slice(start, end).match(/PRIMARY\s+KEY\s*\(([^)]*)\)/ig) || []).flatMap(s => parseIdentList(s.replace(/^[^(]*\(/, '').replace(/\)$/, '')));
+    for (const nme of pkNames) {
+        if (!seen.has(nme)) { const at = text.indexOf('PRIMARY', start); return fail(at < 0 ? start : at, `PRIMARY KEY sütunu tabloda yok: ${nme}`); }
+    }
+    return { table: t };
+}
+
+function sqlTabHTML() {
+    return `<div class="ep-sqlview" hidden>
+        <div class="ep-sqlbar"><span class="ep-lbl" style="margin:0">CREATE TABLE metni</span>
+            <button type="button" class="btn btn-sm btn-outline-secondary" data-act="copysql">Kopyala</button></div>
+        <div class="ep-sqlwrap"><pre class="ep-hl" aria-hidden="true"></pre><textarea class="ep-sql" spellcheck="false" wrap="off" autocomplete="off" autocapitalize="off"></textarea></div>
+        <div class="ep-sqlerr" hidden></div>
+    </div>`;
+}
+
+function formToTable(p, old) {
+    const newName = p.querySelector('.ep-tname').value.trim();
+    if (!newName) { showToast('Tablo adı boş olamaz'); return null; }
+    if (newName !== old.tableName && window.parsedTables.some(x => x.tableName === newName)) { showToast('Bu adda tablo var'); return null; }
+    const cols = [], fks = [], seen = new Set();
+    for (const row of p.querySelectorAll('.ep-col')) {
+        const name = row.querySelector('.ep-name').value.trim();
+        if (!name) continue;
+        if (seen.has(name)) { showToast(`Yinelenen sütun: ${name}`); return null; }
+        seen.add(name);
+        const type = composeColType({
+            base: row.querySelector('.ep-base').value.trim() || 'INT',
+            notNull: row.querySelector('.ep-nn').checked,
+            def: row.querySelector('.ep-def').value.trim(),
+            extra: row.querySelector('.ep-extra').value.trim()
+        });
+        cols.push({ name, type, pk: row.querySelector('.ep-pk').checked });
+        const fk = row.querySelector('.ep-fk').value.trim();
+        const m = fk.match(/^([^.\s]+)\.([^.\s]+)$/);
+        if (m) fks.push({ name: `fk_${newName}_${name}`, column: name, referencesTable: m[1] === old.tableName ? newName : m[1], referencesColumn: m[2] });
+    }
+    if (!cols.length) { showToast('En az bir sütun gerekli'); return null; }
+    return { tableName: newName, columns: cols, foreignKeys: fks };
+}
+
+function fillForm(p, t) {
+    p.querySelector('.ep-tname').value = t.tableName;
+    p.querySelector('.ep-cols').innerHTML = t.columns.map(c => editRowHTML(c, t.foreignKeys.find(f => f.column === c.name))).join('');
+}
+
+function setSqlError(p, err, text) {
+    const box = p.querySelector('.ep-sqlerr'), ta = p.querySelector('.ep-sql');
+    if (!err) { box.hidden = true; box.textContent = ''; ta.classList.remove('ep-bad'); return; }
+    box.hidden = false;
+    box.textContent = `Satır ${err.line}, sütun ${err.col}: ${err.msg}`;
+    ta.classList.add('ep-bad');
+    if (text != null) { ta.focus(); ta.setSelectionRange(err.pos, Math.min(err.pos + 1, ta.value.length)); }
+}
+
+function syncSqlHl(p) {
+    const ta = p.querySelector('.ep-sql'), hl = p.querySelector('.ep-hl');
+    hl.innerHTML = highlightSQL(ta.value);
+    hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft;
+}
+
+function switchEditTab(p, tab) {
+    const cur = p.dataset.tab || 'visual';
+    if (tab === cur) return;
+    const old = window.parsedTables.find(x => x.tableName === editingTable);
+    const ta = p.querySelector('.ep-sql');
+    if (tab === 'sql') {
+        const n = formToTable(p, old);
+        if (!n) return;
+        ta.value = tableToSQL(n);
+        setSqlError(p, null);
+        syncSqlHl(p);
+    } else {
+        const r = parseTableSQL(ta.value);
+        if (r.error) { setSqlError(p, r.error, ta.value); return; }
+        setSqlError(p, null);
+        fillForm(p, r.table);
+    }
+    p.dataset.tab = tab;
+    p.querySelector('.ep-visual').hidden = tab !== 'visual';
+    p.querySelector('.ep-sqlview').hidden = tab !== 'sql';
+    p.querySelectorAll('.ep-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+    if (tab === 'sql') ta.focus();
+}
+
+function openEditPanel(name, tab) {
     const t = window.parsedTables.find(x => x.tableName === name);
     if (!t) return;
     closeEditPanel();
     editingTable = name;
     const p = document.createElement('div');
     p.id = 'edit-panel';
+    p.dataset.tab = 'visual';
     p.innerHTML = `<div class="ep-top"><strong>Tabloyu düzenle</strong><button type="button" class="hist-x" data-act="close" title="Kapat">&times;</button></div>
+        <div class="ep-tabs"><button type="button" class="ep-tab active" data-tab="visual">Görsel</button><button type="button" class="ep-tab" data-tab="sql">SQL</button></div>
         <div class="ep-body">
-            <label class="ep-lbl">Tablo adı</label>
-            <input class="ep-tname" value="${esc(t.tableName)}">
-            <label class="ep-lbl">Sütunlar</label>
-            <div class="ep-cols">${t.columns.map(c => editRowHTML(c, t.foreignKeys.find(f => f.column === c.name))).join('')}</div>
-            <button type="button" class="btn btn-sm btn-outline-secondary" data-act="addcol">+ Sütun ekle</button>
+            <div class="ep-visual">
+                <label class="ep-lbl">Tablo adı</label>
+                <input class="ep-tname" value="${esc(t.tableName)}">
+                <label class="ep-lbl">Sütunlar</label>
+                <div class="ep-cols">${t.columns.map(c => editRowHTML(c, t.foreignKeys.find(f => f.column === c.name))).join('')}</div>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-act="addcol">+ Sütun ekle</button>
+            </div>
+            ${sqlTabHTML()}
         </div>
         <div class="ep-foot">
             <button type="button" class="btn btn-sm btn-outline-danger me-auto" data-act="deltable">Tabloyu sil</button>
@@ -2078,6 +2287,8 @@ function openEditPanel(name) {
             <button type="button" class="btn btn-sm btn-primary" data-act="apply">Uygula</button>
         </div>`;
     p.addEventListener('click', e => {
+        const tb = e.target.closest('.ep-tab');
+        if (tb) { switchEditTab(p, tb.dataset.tab); return; }
         const b = e.target.closest('[data-act]');
         if (!b) return;
         const act = b.dataset.act, row = b.closest('.ep-col'), cols = p.querySelector('.ep-cols');
@@ -2087,48 +2298,61 @@ function openEditPanel(name) {
         else if (act === 'up' && row.previousElementSibling) cols.insertBefore(row, row.previousElementSibling);
         else if (act === 'down' && row.nextElementSibling) cols.insertBefore(row.nextElementSibling, row);
         else if (act === 'apply') applyEditPanel();
+        else if (act === 'copysql') {
+            const v = p.querySelector('.ep-sql').value;
+            const done = () => showToast('SQL kopyalandı');
+            if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(v).then(done, () => { p.querySelector('.ep-sql').select(); document.execCommand('copy'); done(); });
+            else { p.querySelector('.ep-sql').select(); document.execCommand('copy'); done(); }
+        }
         else if (act === 'deltable') { const n = editingTable; closeEditPanel(); deleteTableManual(n); }
     });
+    const ta = p.querySelector('.ep-sql');
+    ta.addEventListener('input', () => { setSqlError(p, null); syncSqlHl(p); });
+    ta.addEventListener('scroll', () => { const hl = p.querySelector('.ep-hl'); hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft; });
+    ta.addEventListener('keydown', e => {
+        if (e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            ta.setRangeText('  ', ta.selectionStart, ta.selectionEnd, 'end');
+            ta.dispatchEvent(new Event('input'));
+        } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); applyEditPanel(); }
+    });
     document.body.appendChild(p);
+    if (tab === 'sql') switchEditTab(p, 'sql');
 }
 
 function applyEditPanel() {
     const p = document.getElementById('edit-panel');
     if (!p || !editingTable) return;
     const old = window.parsedTables.find(x => x.tableName === editingTable);
-    const newName = p.querySelector('.ep-tname').value.trim();
-    if (!newName) { showToast('Tablo adı boş olamaz'); return; }
-    if (newName !== old.tableName && window.parsedTables.some(x => x.tableName === newName)) { showToast('Bu adda tablo var'); return; }
-    const cols = [], fks = [], seen = new Set();
-    for (const row of p.querySelectorAll('.ep-col')) {
-        const name = row.querySelector('.ep-name').value.trim();
-        if (!name) continue;
-        if (seen.has(name)) { showToast(`Yinelenen sütun: ${name}`); return; }
-        seen.add(name);
-        const type = composeColType({
-            base: row.querySelector('.ep-base').value.trim() || 'INT',
-            notNull: row.querySelector('.ep-nn').checked,
-            def: row.querySelector('.ep-def').value.trim(),
-            extra: row.querySelector('.ep-extra').value.trim()
-        });
-        const c = { name, type, pk: row.querySelector('.ep-pk').checked };
-        const prev = old.columns.find(x => x.name === name);
-        if (prev && prev._diff) c._diff = prev._diff;
-        cols.push(c);
-        const fk = row.querySelector('.ep-fk').value.trim();
-        const m = fk.match(/^([^.\s]+)\.([^.\s]+)$/);
-        if (m) fks.push({ name: `fk_${newName}_${name}`, column: name, referencesTable: m[1] === old.tableName ? newName : m[1], referencesColumn: m[2] });
+    let n;
+    if ((p.dataset.tab || 'visual') === 'sql') {
+        const text = p.querySelector('.ep-sql').value;
+        const r = parseTableSQL(text);
+        if (r.error) { setSqlError(p, r.error, text); return; }
+        n = r.table;
+        if (n.tableName !== old.tableName && window.parsedTables.some(x => x.tableName === n.tableName)) {
+            const at = text.toLowerCase().indexOf(n.tableName.toLowerCase());
+            setSqlError(p, { msg: `Bu adda tablo var: ${n.tableName}`, ...lineColOf(text, Math.max(0, at)) }, text); return;
+        }
+        n.foreignKeys.forEach(f => { if (f.referencesTable === old.tableName && n.tableName !== old.tableName) f.referencesTable = n.tableName; });
+    } else {
+        n = formToTable(p, old);
+        if (!n) return;
     }
-    if (!cols.length) { showToast('En az bir sütun gerekli'); return; }
+    n.columns.forEach(c => { const prev = old.columns.find(x => x.name === c.name); if (prev && prev._diff) c._diff = prev._diff; });
+    const newName = n.tableName;
     const before = snapshot();
-    const n = { tableName: newName, columns: cols, foreignKeys: fks };
     if (old.diff) n.diff = old.diff;
     const cmp = compareTable(old, n);
-    const items = cmp.items.filter(i => i.k !== 'del' || true);
+    const items = cmp.items.slice();
     if (newName !== old.tableName) items.unshift({ k: 'chg', t: `~ tablo adı: ${old.tableName} → ${newName}` });
+    if (items.length) {
+        if (n.diff !== 'added') n.diff = 'changed';
+        n.columns.forEach(c => { if (cmp.marks[c.name]) c._diff = { kind: cmp.marks[c.name].kind, note: cmp.marks[c.name].note }; });
+        Object.values(cmp.marks).forEach(m => { if (m.kind === 'removed') n.columns.push({ ...clone(m.ghost), _diff: { kind: 'removed', note: m.note } }); });
+    }
     const el = tables[old.tableName];
     const x = el.offsetLeft, y = el.offsetTop;
-    // Modeli güncelle
     const idx = window.parsedTables.indexOf(old);
     window.parsedTables[idx] = n;
     if (newName !== old.tableName) {

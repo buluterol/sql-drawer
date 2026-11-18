@@ -857,7 +857,7 @@ html {
 .table-name-text { display: inline-block; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 
 /* Madde 9: düzenleme paneli */
-#edit-panel { position: fixed; top: 0; right: 0; bottom: 0; width: 380px; max-width: 100vw; z-index: 1200; display: flex; flex-direction: column;
+#edit-panel { position: fixed; top: 0; right: 0; bottom: 0; width: 460px; max-width: 100vw; z-index: 1200; display: flex; flex-direction: column;
     background: var(--modal-bg, #fff); color: var(--text-color); border-left: 1px solid var(--border-color, #ccc); box-shadow: -4px 0 16px rgba(0,0,0,.2); }
 #edit-panel .ep-top { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border-color, #ccc); }
 #edit-panel .ep-body { flex: 1; overflow-y: auto; padding: 10px 14px; }
@@ -870,3 +870,22 @@ html {
 #edit-panel .ep-small { font-size: 12px; }
 #edit-panel .ep-btn { border: 1px solid var(--column-border); background: transparent; color: var(--text-color); border-radius: 4px; width: 24px; height: 24px; line-height: 1; cursor: pointer; }
 #edit-panel .ep-del { color: #d33; }
+
+/* Madde 13: SQL sekmesi */
+#edit-panel .ep-tabs { display: flex; gap: 2px; padding: 6px 14px 0; border-bottom: 1px solid var(--border-color, #ccc); }
+#edit-panel .ep-tab { border: 1px solid transparent; border-bottom: 0; background: transparent; color: var(--text-color); opacity: .65; padding: 5px 14px; border-radius: 6px 6px 0 0; font-size: 13px; cursor: pointer; }
+#edit-panel .ep-tab.active { opacity: 1; font-weight: 600; background: var(--column-bg); border-color: var(--border-color, #ccc); margin-bottom: -1px; }
+#edit-panel .ep-visual[hidden], #edit-panel .ep-sqlview[hidden] { display: none; }
+#edit-panel .ep-body:has(.ep-sqlview:not([hidden])) { display: flex; flex-direction: column; }
+#edit-panel .ep-sqlview { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+#edit-panel .ep-sqlbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+#edit-panel .ep-sqlwrap { position: relative; flex: 1; min-height: 220px; border: 1px solid var(--column-border); border-radius: 6px; background: var(--column-bg); overflow: hidden; }
+#edit-panel .ep-hl, #edit-panel .ep-sql { position: absolute; inset: 0; margin: 0; padding: 8px 10px; border: 0; box-sizing: border-box; width: 100%; height: 100%;
+    font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; tab-size: 2; overflow: auto; letter-spacing: 0; }
+#edit-panel .ep-hl { pointer-events: none; color: var(--text-color); overflow: hidden; }
+#edit-panel .ep-sql { background: transparent; color: transparent; caret-color: var(--text-color); resize: none; outline: none; }
+#edit-panel .ep-sql::selection { background: rgba(80, 140, 255, .35); }
+#edit-panel .ep-sql.ep-bad { box-shadow: inset 0 0 0 2px #d33; }
+#edit-panel .ep-sqlerr { margin-top: 6px; padding: 6px 8px; border-radius: 6px; font-size: 12px; background: rgba(221, 51, 51, .12); color: #d33; border: 1px solid rgba(221, 51, 51, .4); }
+.sq-k { color: #c2255c; font-weight: 600; } .sq-t { color: #1971c2; } .sq-s { color: #2b8a3e; } .sq-i { color: #e8590c; } .sq-n { color: #7048e8; } .sq-c { color: #868e96; font-style: italic; }
+[data-theme="dark"] .sq-k { color: #ff8fab; } [data-theme="dark"] .sq-t { color: #74c0fc; } [data-theme="dark"] .sq-s { color: #8ce99a; } [data-theme="dark"] .sq-i { color: #ffa94d; } [data-theme="dark"] .sq-n { color: #b197fc; }
