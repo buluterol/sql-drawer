@@ -1838,6 +1838,7 @@ function hideContextMenu() {
 
 // Global click listener - context menu'yu gizlemek ve highlight temizlemek için
 document.addEventListener('click', function (e) {
+    if (e.target.closest('#edit-panel')) return; // panel içi tıklama "boş alan" sayılmaz
     if (!e.target.closest('.context-menu') && !e.target.closest('.table-box')) {
         hideContextMenu();
         clearHighlight();
@@ -1849,8 +1850,8 @@ document.addEventListener('click', function (e) {
 // ESC tuşu ile highlight'ı temizle
 document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
-        clearTableSelection();
-        clearHighlight();
+        const inField = e.target && e.target.closest && e.target.closest('#edit-panel') && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
+        if (!inField) { clearTableSelection(); clearHighlight(); }
         hideContextMenu();
         closeEditPanel();
     }
@@ -2306,6 +2307,7 @@ function openEditPanel(name, tab) {
     if (!t) return;
     closeEditPanel();
     editingTable = name;
+    if (tables[name] && focusedTable !== name) focusTable(name);
     const p = document.createElement('div');
     p.id = 'edit-panel';
     p.dataset.tab = 'visual';
@@ -2407,7 +2409,9 @@ function applyEditPanel() {
     }
     el.remove(); delete tables[old.tableName];
     if (focusedTable === old.tableName) focusedTable = newName;
+    const keepFocus = focusedTable;
     createTableElement(n, x, y);
+    if (keepFocus && tables[keepFocus]) focusTable(keepFocus);
     if (items.length) recordVersion('manual', { added: [], removed: [], changed: [{ table: newName, items }] });
     commitUndo(before);
     closeEditPanel();
