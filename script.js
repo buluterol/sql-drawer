@@ -1015,7 +1015,8 @@ function autoFitZoom() {
     const contentHeight = maxY - minY;
 
     // Viewport boyutları
-    const viewportWidth = outputWrapper.clientWidth;
+    const panelW = editPanelWidth();
+    const viewportWidth = outputWrapper.clientWidth - panelW;
     const viewportHeight = outputWrapper.clientHeight;
 
     // Padding ekle (içerik etrafında boşluk için)
@@ -1039,7 +1040,7 @@ function autoFitZoom() {
     applyZoom();
 
     // Yüzen kontrollerin (sol panel, sağ zoom düğmeleri) altında kalmasın
-    const insetL = Math.min(170, viewportWidth * 0.1), insetR = Math.min(130, viewportWidth * 0.08), insetV = 30;
+    const insetL = Math.min(170, viewportWidth * 0.1), insetR = Math.min(130, viewportWidth * 0.08) + (panelW ? 12 : 0), insetV = 30;
     const availW = viewportWidth - insetL - insetR;
     const availH = viewportHeight - insetV * 2;
 
@@ -2035,6 +2036,45 @@ let editingTable = null;
 
 function esc(v) { return String(v == null ? '' : v).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
+const EP_DEFAULT_W = 460, EP_MIN_W = 320, EP_KEY = 'sqlDrawer.epWidth';
+function epMaxW() { return Math.max(EP_MIN_W, Math.round(window.innerWidth * 0.7)); }
+function epClamp(w) { return Math.max(EP_MIN_W, Math.min(epMaxW(), Math.round(w))); }
+function epSavedWidth() {
+    try { const v = parseFloat(localStorage.getItem(EP_KEY)); if (v > 0) return epClamp(v); } catch (e) {}
+    return EP_DEFAULT_W;
+}
+function editPanelWidth() {
+    const p = document.getElementById('edit-panel');
+    return p ? p.getBoundingClientRect().width : 0;
+}
+function setEditPanelWidth(p, w, save) {
+    p.style.width = epClamp(w) + 'px';
+    if (save) { try { localStorage.setItem(EP_KEY, String(epClamp(w))); } catch (e) {} }
+}
+function initEditPanelResize(p) {
+    const h = p.querySelector('.ep-resize');
+    let startX = 0, startW = 0;
+    h.addEventListener('pointerdown', e => {
+        if (e.button !== undefined && e.button !== 0) return;
+        startX = e.clientX; startW = p.getBoundingClientRect().width;
+        h.setPointerCapture(e.pointerId); p.classList.add('ep-resizing'); e.preventDefault();
+    });
+    h.addEventListener('pointermove', e => {
+        if (!p.classList.contains('ep-resizing')) return;
+        p.classList.remove('ep-full');
+        setEditPanelWidth(p, startW + (startX - e.clientX), false);
+    });
+    const end = e => {
+        if (!p.classList.contains('ep-resizing')) return;
+        p.classList.remove('ep-resizing');
+        setEditPanelWidth(p, p.getBoundingClientRect().width, true);
+    };
+    h.addEventListener('pointerup', end); h.addEventListener('pointercancel', end);
+    h.addEventListener('dblclick', () => { p.classList.remove('ep-full'); setEditPanelWidth(p, EP_DEFAULT_W, true); });
+}
+
+function refitPanel() { try { drawConnections(); } catch (e) {} }
+
 function closeEditPanel() {
     const p = document.getElementById('edit-panel');
     if (p) p.remove();
@@ -2269,7 +2309,7 @@ function openEditPanel(name, tab) {
     const p = document.createElement('div');
     p.id = 'edit-panel';
     p.dataset.tab = 'visual';
-    p.innerHTML = `<div class="ep-top"><strong>Tabloyu düzenle</strong><button type="button" class="hist-x" data-act="close" title="Kapat">&times;</button></div>
+    p.innerHTML = `<div class="ep-resize" title="Genişletmek için sürükle (çift tıkla: varsayılan)"></div><div class="ep-top"><strong>Tabloyu düzenle</strong><span class="ep-topbtns"><button type="button" class="hist-x" data-act="full" title="Genişlet / daralt"><i class="fa-solid fa-up-right-and-down-left-from-center"></i></button><button type="button" class="hist-x" data-act="close" title="Kapat">&times;</button></span></div>
         <div class="ep-tabs"><button type="button" class="ep-tab active" data-tab="visual">Görsel</button><button type="button" class="ep-tab" data-tab="sql">SQL</button></div>
         <div class="ep-body">
             <div class="ep-visual">
@@ -2293,6 +2333,11 @@ function openEditPanel(name, tab) {
         if (!b) return;
         const act = b.dataset.act, row = b.closest('.ep-col'), cols = p.querySelector('.ep-cols');
         if (act === 'close') closeEditPanel();
+        else if (act === 'full') {
+            const full = p.classList.toggle('ep-full');
+            if (full) p.style.width = epMaxW() + 'px'; else setEditPanelWidth(p, epSavedWidth(), false);
+            refitPanel();
+        }
         else if (act === 'addcol') { cols.insertAdjacentHTML('beforeend', editRowHTML({ name: '', type: 'INT' }, null)); cols.lastElementChild.querySelector('.ep-name').focus(); }
         else if (act === 'del') row.remove();
         else if (act === 'up' && row.previousElementSibling) cols.insertBefore(row, row.previousElementSibling);
@@ -2316,6 +2361,8 @@ function openEditPanel(name, tab) {
             ta.dispatchEvent(new Event('input'));
         } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); applyEditPanel(); }
     });
+    setEditPanelWidth(p, epSavedWidth(), false);
+    initEditPanelResize(p);
     document.body.appendChild(p);
     if (tab === 'sql') switchEditTab(p, 'sql');
 }

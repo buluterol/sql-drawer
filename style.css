@@ -889,3 +889,15 @@ html {
 #edit-panel .ep-sqlerr { margin-top: 6px; padding: 6px 8px; border-radius: 6px; font-size: 12px; background: rgba(221, 51, 51, .12); color: #d33; border: 1px solid rgba(221, 51, 51, .4); }
 .sq-k { color: #c2255c; font-weight: 600; } .sq-t { color: #1971c2; } .sq-s { color: #2b8a3e; } .sq-i { color: #e8590c; } .sq-n { color: #7048e8; } .sq-c { color: #868e96; font-style: italic; }
 [data-theme="dark"] .sq-k { color: #ff8fab; } [data-theme="dark"] .sq-t { color: #74c0fc; } [data-theme="dark"] .sq-s { color: #8ce99a; } [data-theme="dark"] .sq-i { color: #ffa94d; } [data-theme="dark"] .sq-n { color: #b197fc; }
+
+/* Madde 14: yeniden boyutlanabilir düzenleme paneli */
+#edit-panel .ep-resize { position: absolute; left: -4px; top: 0; bottom: 0; width: 9px; cursor: col-resize; z-index: 3; touch-action: none; }
+#edit-panel .ep-resize::after { content: ''; position: absolute; left: 4px; top: 50%; width: 3px; height: 44px; margin-top: -22px; border-radius: 2px; background: var(--border-color, #999); opacity: .55; }
+#edit-panel .ep-resize:hover::after, #edit-panel.ep-resizing .ep-resize::after { opacity: 1; background: #0d6efd; }
+#edit-panel.ep-resizing { user-select: none; transition: none; }
+#edit-panel .ep-topbtns { display: flex; gap: 6px; align-items: center; }
+#edit-panel .ep-topbtns [data-act=full] { font-size: 14px; }
+@media (max-width: 768px) {
+    #edit-panel { width: 100vw !important; }
+    #edit-panel .ep-resize, #edit-panel [data-act=full] { display: none; }
+}
