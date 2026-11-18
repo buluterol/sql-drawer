@@ -881,7 +881,7 @@ html {
 #edit-panel .ep-sqlbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 #edit-panel .ep-sqlwrap { position: relative; flex: 1; min-height: 220px; border: 1px solid var(--column-border); border-radius: 6px; background: var(--column-bg); overflow: hidden; }
 #edit-panel .ep-hl, #edit-panel .ep-sql { position: absolute; inset: 0; margin: 0; padding: 8px 10px; border: 0; box-sizing: border-box; width: 100%; height: 100%;
-    font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; tab-size: 2; overflow: auto; letter-spacing: 0; }
+    font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; tab-size: 2; overflow-x: hidden; overflow-y: auto; letter-spacing: 0; }
 #edit-panel .ep-hl { pointer-events: none; color: var(--text-color); overflow: hidden; }
 #edit-panel .ep-sql { background: transparent; color: transparent; caret-color: var(--text-color); resize: none; outline: none; }
 #edit-panel .ep-sql::selection { background: rgba(80, 140, 255, .35); }
@@ -901,3 +901,7 @@ html {
     #edit-panel { width: 100vw !important; }
     #edit-panel .ep-resize, #edit-panel [data-act=full] { display: none; }
 }
+
+/* SQL sekmesi: satır kırma kapalıyken eski yatay kaydırma */
+#edit-panel .ep-sqlwrap.nowrap .ep-hl, #edit-panel .ep-sqlwrap.nowrap .ep-sql { white-space: pre; overflow-wrap: normal; overflow-x: auto; }
+#edit-panel .ep-sqlwrap.nowrap .ep-hl { overflow: hidden; }

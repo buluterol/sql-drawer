@@ -147,7 +147,7 @@ function parseCreateTable(sql) {
                 const colMatch = line.match(colRegex);
                 if (!colMatch) return;
                 const colName = unquoteIdent(colMatch[1]);
-                let type = colMatch[2].replace(/\s+/g, ' ').trim();
+                let type = squashTypeSpaces(colMatch[2]);
                 let pk = false;
 
                 // Sütun içi PRIMARY KEY / REFERENCES
@@ -1441,6 +1441,56 @@ function fkClause(g) {
 
 // Seçili (veya tüm) tablolar için CREATE TABLE çıktısı üretir.
 // Bağımlılık sırasına dizer; döngüsel FK'lar sonda ALTER TABLE ile eklenir.
+// Tür metnindeki boşlukları (satır sonları dahil) tırnak dışında tek boşluğa indirir; "( " ve " )" ve " ," sıkıştırılır
+function squashTypeSpaces(str) {
+    let out = '', i = 0, depth = 0;
+    while (i < str.length) {
+        const ch = str[i];
+        if (ch === '(') depth++; else if (ch === ')') depth--;
+        if (ch === "'" || ch === '"' || ch === '`') {
+            let j = i + 1;
+            while (j < str.length && str[j] !== ch) { if (str[j] === '\\' && ch !== '`') j++; j++; }
+            out += str.slice(i, j + 1); i = j + 1;
+        } else if (/\s/.test(ch)) {
+            while (i < str.length && /\s/.test(str[i])) i++;
+            const nx = str[i];
+            if (nx === ')' || nx === ',' || out === '' || /\($/.test(out) || (depth > 0 && /,$/.test(out)) || i >= str.length) continue;
+            out += ' ';
+        } else { out += ch; i++; }
+    }
+    return out.trim();
+}
+
+// ENUM/SET listesi uzunsa değerleri girintili, paketlenmiş satırlara kırar; diğer türler aynen kalır
+const WRAP_LIMIT = 70;
+function formatColLine(name, type, indent = '  ') {
+    const head = `${indent}${qid(name)} `;
+    const m = /^(.*?\b(?:ENUM|SET)\s*)\(/i.exec(type);
+    if (!m || head.length + type.length <= WRAP_LIMIT) return `${head}${type}`.trimEnd();
+    // eşleşen kapanış parantezini bul (tırnak duyarlı)
+    let i = m[0].length, depth = 1, vals = [], cur = '', q = null;
+    for (; i < type.length && depth > 0; i++) {
+        const ch = type[i];
+        if (q) { cur += ch; if (ch === '\\') { cur += type[++i] || ''; } else if (ch === q) q = null; continue; }
+        if (ch === "'" || ch === '"') { q = ch; cur += ch; }
+        else if (ch === '(') { depth++; cur += ch; }
+        else if (ch === ')') { depth--; if (depth > 0) cur += ch; }
+        else if (ch === ',' && depth === 1) { vals.push(cur.trim()); cur = ''; }
+        else cur += ch;
+    }
+    if (depth > 0) return `${head}${type}`.trimEnd();
+    vals.push(cur.trim());
+    const rest = type.slice(i).trimEnd(), ind2 = indent + '  ';
+    const rows = []; let row = '';
+    vals.filter(v => v !== '').forEach((v, k, arr) => {
+        const piece = v + (k < arr.length - 1 ? ',' : '');
+        if (row && (ind2 + row + ' ' + piece).length > WRAP_LIMIT) { rows.push(row); row = piece; }
+        else row = row ? row + ' ' + piece : piece;
+    });
+    if (row) rows.push(row);
+    return `${head}${m[1].trimEnd()}(\n${rows.map(r => ind2 + r).join('\n')}\n${indent})${rest}`;
+}
+
 function generateDDL(names) {
     const wanted = new Set(names);
     const gone = new Set(window.parsedTables.filter(t => t.diff === 'removed').map(t => t.tableName));
@@ -1475,7 +1525,7 @@ function generateDDL(names) {
     list.forEach(t => visit(t, []));
 
     const createStatements = ordered.map(t => {
-        const lines = t.columns.map(c => `  ${qid(c.name)} ${c.type}`.trimEnd());
+        const lines = t.columns.map(c => formatColLine(c.name, c.type));
         const pks = t.columns.filter(c => c.pk).map(c => qid(c.name));
         if (pks.length) lines.push(`  PRIMARY KEY (${pks.join(', ')})`);
         groups[t.tableName].forEach(g => {
@@ -2107,7 +2157,7 @@ function editRowHTML(c, fk) {
 // ---- Madde 13: SQL sekmesi ----
 function tableToSQL(t) {
     const cols = t.columns.filter(c => !(c._diff && c._diff.kind === 'removed'));
-    const lines = cols.map(c => `  ${qid(c.name)} ${c.type}`.trimEnd());
+    const lines = cols.map(c => formatColLine(c.name, c.type));
     const pks = cols.filter(c => c.pk).map(c => qid(c.name));
     if (pks.length) lines.push(`  PRIMARY KEY (${pks.join(', ')})`);
     groupForeignKeys(t).forEach(g => lines.push('  ' + fkClause(g)));
@@ -2224,11 +2274,14 @@ function parseTableSQL(raw) {
     return { table: t };
 }
 
+function sqlWrapOn() { try { return localStorage.getItem('sqlDrawer.sqlWrap') !== '0'; } catch (e) { return true; } }
 function sqlTabHTML() {
+    const on = sqlWrapOn();
     return `<div class="ep-sqlview" hidden>
         <div class="ep-sqlbar"><span class="ep-lbl" style="margin:0">CREATE TABLE metni</span>
-            <button type="button" class="btn btn-sm btn-outline-secondary" data-act="copysql">Kopyala</button></div>
-        <div class="ep-sqlwrap"><pre class="ep-hl" aria-hidden="true"></pre><textarea class="ep-sql" spellcheck="false" wrap="off" autocomplete="off" autocapitalize="off"></textarea></div>
+            <span><button type="button" class="btn btn-sm btn-outline-secondary ${on ? 'active' : ''}" data-act="wrapsql" aria-pressed="${on}" title="Uzun satırları kır / yatay kaydır">Satır kır</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary" data-act="copysql">Kopyala</button></span></div>
+        <div class="ep-sqlwrap${on ? '' : ' nowrap'}"><pre class="ep-hl" aria-hidden="true"></pre><textarea class="ep-sql" spellcheck="false" wrap="soft" autocomplete="off" autocapitalize="off"></textarea></div>
         <div class="ep-sqlerr" hidden></div>
     </div>`;
 }
@@ -2345,6 +2398,15 @@ function openEditPanel(name, tab) {
         else if (act === 'up' && row.previousElementSibling) cols.insertBefore(row, row.previousElementSibling);
         else if (act === 'down' && row.nextElementSibling) cols.insertBefore(row.nextElementSibling, row);
         else if (act === 'apply') applyEditPanel();
+        else if (act === 'wrapsql') {
+            const on = !sqlWrapOn();
+            try { localStorage.setItem('sqlDrawer.sqlWrap', on ? '1' : '0'); } catch (e) {}
+            p.querySelector('.ep-sqlwrap').classList.toggle('nowrap', !on);
+            e.target.closest('[data-act]').classList.toggle('active', on);
+            e.target.closest('[data-act]').setAttribute('aria-pressed', on);
+            p.querySelector('.ep-sql').setAttribute('wrap', on ? 'soft' : 'off');
+            syncSqlHl(p);
+        }
         else if (act === 'copysql') {
             const v = p.querySelector('.ep-sql').value;
             const done = () => showToast('SQL kopyalandı');
