@@ -1461,34 +1461,108 @@ function squashTypeSpaces(str) {
     return out.trim();
 }
 
-// ENUM/SET listesi uzunsa değerleri girintili, paketlenmiş satırlara kırar; diğer türler aynen kalır
-const WRAP_LIMIT = 70;
-function formatColLine(name, type, indent = '  ') {
-    const head = `${indent}${qid(name)} `;
-    const m = /^(.*?\b(?:ENUM|SET)\s*)\(/i.exec(type);
-    if (!m || head.length + type.length <= WRAP_LIMIT) return `${head}${type}`.trimEnd();
-    // eşleşen kapanış parantezini bul (tırnak duyarlı)
-    let i = m[0].length, depth = 1, vals = [], cur = '', q = null;
-    for (; i < type.length && depth > 0; i++) {
+// ---- Madde 17: Prettify ayarları (SQL sekmesi + DDL export ortak) ----
+const FMT_DEFAULTS = { width: 80, enumMode: 'fit', enumN: 3, align: false, indent: '2', kw: 'asis', constraints: 'end' };
+function fmtOpts() {
+    try { return { ...FMT_DEFAULTS, ...JSON.parse(localStorage.getItem('sqlDrawer.fmt') || '{}') }; } catch (e) { return { ...FMT_DEFAULTS }; }
+}
+function setFmtOpts(o) { try { localStorage.setItem('sqlDrawer.fmt', JSON.stringify(o)); } catch (e) {} }
+const fmtLen = s => s.replace(/\t/g, '    ').length;
+let KW_SET = null;
+function applyKwCase(text, mode) {
+    if (mode !== 'upper' && mode !== 'lower') return text;
+    if (!KW_SET) KW_SET = new Set((SQL_KW + '|' + SQL_TYPES).split('|'));
+    return text.split(/('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|`[^`]*`)/).map((seg, i) => i % 2 ? seg :
+        seg.replace(/[A-Za-z_][A-Za-z_0-9]*/g, w => KW_SET.has(w.toUpperCase()) ? (mode === 'lower' ? w.toLowerCase() : w.toUpperCase()) : w)).join('');
+}
+// Türü ilk üst düzey boşlukta (parantez/tırnak dışı) temel tür + kalan olarak ayırır
+function splitBaseType(type) {
+    let d = 0, q = null;
+    for (let i = 0; i < type.length; i++) {
         const ch = type[i];
-        if (q) { cur += ch; if (ch === '\\') { cur += type[++i] || ''; } else if (ch === q) q = null; continue; }
+        if (q) { if (ch === '\\' && q !== '`') i++; else if (ch === q) q = null; continue; }
+        if (ch === "'" || ch === '"' || ch === '`') q = ch;
+        else if (ch === '(') d++;
+        else if (ch === ')') d--;
+        else if (d === 0 && /\s/.test(ch)) return [type.slice(0, i), type.slice(i + 1).trim()];
+    }
+    return [type, ''];
+}
+function parseEnumBase(base) {
+    const m = /^(ENUM|SET)\s*\(/i.exec(base);
+    if (!m || !base.endsWith(')')) return null;
+    const inner = base.slice(m[0].length, -1), vals = [];
+    let cur = '', q = null;
+    for (let i = 0; i < inner.length; i++) {
+        const ch = inner[i];
+        if (q) { cur += ch; if (ch === '\\') cur += inner[++i] || ''; else if (ch === q) q = null; continue; }
         if (ch === "'" || ch === '"') { q = ch; cur += ch; }
-        else if (ch === '(') { depth++; cur += ch; }
-        else if (ch === ')') { depth--; if (depth > 0) cur += ch; }
-        else if (ch === ',' && depth === 1) { vals.push(cur.trim()); cur = ''; }
+        else if (ch === ',') { vals.push(cur.trim()); cur = ''; }
         else cur += ch;
     }
-    if (depth > 0) return `${head}${type}`.trimEnd();
     vals.push(cur.trim());
-    const rest = type.slice(i).trimEnd(), ind2 = indent + '  ';
-    const rows = []; let row = '';
-    vals.filter(v => v !== '').forEach((v, k, arr) => {
-        const piece = v + (k < arr.length - 1 ? ',' : '');
-        if (row && (ind2 + row + ' ' + piece).length > WRAP_LIMIT) { rows.push(row); row = piece; }
-        else row = row ? row + ' ' + piece : piece;
+    return { kw: m[1], vals: vals.filter(v => v !== '') };
+}
+// Ortak biçimlendirici: CREATE TABLE metnini ayarlara göre üretir.
+// cols: [{name,type,pk}], groups: FK grupları, skip(g): sona (ALTER) bırakılan FK mi, tail: ")" sonrası ("; " ya da ENGINE...;)
+function formatCreateTable(tableName, cols, groups, skip, tail, opts) {
+    opts = opts || fmtOpts();
+    const ind = opts.indent === 'tab' ? '\t' : opts.indent === '4' ? '    ' : '  ';
+    const ind2 = ind + ind, width = +opts.width || 0, inline = opts.constraints === 'inline';
+    const pkCols = cols.filter(c => c.pk);
+    const endLines = [];
+    const inlinePk = inline && pkCols.length === 1 && !/PRIMARY\s+KEY/i.test(pkCols[0].type) ? pkCols[0].name : null;
+    if (pkCols.length && !inlinePk) endLines.push(`PRIMARY KEY (${pkCols.map(c => qid(c.name)).join(', ')})`);
+    const inlineFk = {};
+    groups.forEach(g => {
+        if (skip && skip(g)) return;
+        if (inline && g.columns.length === 1 && !inlineFk[g.columns[0]]) inlineFk[g.columns[0]] = g;
+        else endLines.push(fkClause(g));
     });
-    if (row) rows.push(row);
-    return `${head}${m[1].trimEnd()}(\n${rows.map(r => ind2 + r).join('\n')}\n${indent})${rest}`;
+    const items = cols.map(c => {
+        const [base, rest0] = splitBaseType(c.type);
+        let rest = rest0;
+        if (c.name === inlinePk) rest = (rest ? rest + ' ' : '') + 'PRIMARY KEY';
+        const g = inlineFk[c.name];
+        if (g) rest = (rest ? rest + ' ' : '') + `REFERENCES ${qid(g.referencesTable)} (${qid(g.referencesColumns[0])})`;
+        return { name: qid(c.name), base, rest, en: parseEnumBase(base) };
+    });
+    // ENUM/SET kırma kararı (hizasız uzunlukla)
+    items.forEach(it => {
+        it.rows = null;
+        if (!it.en || it.en.vals.length < 2) return;
+        const flat = ind + it.name + ' ' + it.base + (it.rest ? ' ' + it.rest : '');
+        const mode = opts.enumMode, vals = it.en.vals;
+        if (mode === 'each') it.rows = vals.map((v, k) => v + (k < vals.length - 1 ? ',' : ''));
+        else if (mode === 'every') {
+            const n = Math.max(1, +opts.enumN || 3);
+            if (vals.length > n) {
+                it.rows = [];
+                for (let k = 0; k < vals.length; k += n) it.rows.push(vals.slice(k, k + n).map((v, j) => v + (k + j < vals.length - 1 ? ',' : '')).join(' '));
+            }
+        } else if (mode === 'fit' && width && fmtLen(flat) > width) {
+            const rows = []; let row = '';
+            vals.forEach((v, k) => {
+                const piece = v + (k < vals.length - 1 ? ',' : '');
+                if (row && fmtLen(ind2 + row + ' ' + piece) > width) { rows.push(row); row = piece; }
+                else row = row ? row + ' ' + piece : piece;
+            });
+            if (row) rows.push(row);
+            it.rows = rows;
+        }
+    });
+    const nameW = opts.align ? Math.max(0, ...items.map(i => i.name.length)) : 0;
+    const baseW = opts.align ? Math.max(0, ...items.filter(i => !i.rows).map(i => i.base.length)) : 0;
+    const lines = items.map(it => {
+        const nm = opts.align ? it.name.padEnd(nameW) : it.name;
+        if (it.rows) {
+            return `${ind}${nm} ${it.en.kw}(\n${it.rows.map(r => ind2 + r).join('\n')}\n${ind})${it.rest ? ' ' + it.rest : ''}`;
+        }
+        const b = opts.align && it.rest ? it.base.padEnd(baseW) : it.base;
+        return `${ind}${nm} ${b}${it.rest ? ' ' + it.rest : ''}`.trimEnd();
+    });
+    endLines.forEach(l => lines.push(ind + l));
+    return applyKwCase(`CREATE TABLE ${qid(tableName)} (\n${lines.join(',\n')}\n)${tail}`, opts.kw);
 }
 
 function generateDDL(names) {
@@ -1525,13 +1599,7 @@ function generateDDL(names) {
     list.forEach(t => visit(t, []));
 
     const createStatements = ordered.map(t => {
-        const lines = t.columns.map(c => formatColLine(c.name, c.type));
-        const pks = t.columns.filter(c => c.pk).map(c => qid(c.name));
-        if (pks.length) lines.push(`  PRIMARY KEY (${pks.join(', ')})`);
-        groups[t.tableName].forEach(g => {
-            if (!deferred.has(t.tableName + '|' + g.name)) lines.push('  ' + fkClause(g));
-        });
-        return `CREATE TABLE ${qid(t.tableName)} (\n${lines.join(',\n')}\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`;
+        return formatCreateTable(t.tableName, t.columns, groups[t.tableName], g => deferred.has(t.tableName + '|' + g.name), ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;');
     });
 
     const alters = [];
@@ -2157,11 +2225,7 @@ function editRowHTML(c, fk) {
 // ---- Madde 13: SQL sekmesi ----
 function tableToSQL(t) {
     const cols = t.columns.filter(c => !(c._diff && c._diff.kind === 'removed'));
-    const lines = cols.map(c => formatColLine(c.name, c.type));
-    const pks = cols.filter(c => c.pk).map(c => qid(c.name));
-    if (pks.length) lines.push(`  PRIMARY KEY (${pks.join(', ')})`);
-    groupForeignKeys(t).forEach(g => lines.push('  ' + fkClause(g)));
-    return `CREATE TABLE ${qid(t.tableName)} (\n${lines.join(',\n')}\n);`;
+    return formatCreateTable(t.tableName, cols, groupForeignKeys(t), null, ';');
 }
 
 const SQL_KW = 'CREATE|TABLE|IF|NOT|EXISTS|NULL|DEFAULT|PRIMARY|KEY|FOREIGN|REFERENCES|CONSTRAINT|UNIQUE|INDEX|AUTO_INCREMENT|UNSIGNED|ON|DELETE|UPDATE|CASCADE|RESTRICT|SET|NO|ACTION|ENGINE|CHARSET|COLLATE|COMMENT|CHECK|AUTOINCREMENT|GENERATED|ALWAYS|AS|IDENTITY|CURRENT_TIMESTAMP';
@@ -2431,6 +2495,15 @@ function openEditPanel(name, tab) {
     if (tab === 'sql') switchEditTab(p, 'sql');
 }
 
+// Anahtar kelime büyük/küçük harfi ve boşluk dışında aynı olan türlerde eski tür metnini korur (sahte "değişti" farkı olmasın)
+function reuseOldTypes(n, old) {
+    const norm = x => x.replace(/\s+/g, '').replace(/'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"/g, m => '\u0001' + m + '\u0001').split('\u0001').map((seg, i) => i % 2 ? seg : seg.toLowerCase()).join('');
+    n.columns.forEach(c => {
+        const prev = old.columns.find(x => x.name === c.name);
+        if (prev && prev.type !== c.type && norm(prev.type) === norm(c.type)) c.type = prev.type;
+    });
+}
+
 function applyEditPanel() {
     const p = document.getElementById('edit-panel');
     if (!p || !editingTable) return;
@@ -2446,6 +2519,7 @@ function applyEditPanel() {
             setSqlError(p, { msg: `Bu adda tablo var: ${n.tableName}`, ...lineColOf(text, Math.max(0, at)) }, text); return;
         }
         n.foreignKeys.forEach(f => { if (f.referencesTable === old.tableName && n.tableName !== old.tableName) f.referencesTable = n.tableName; });
+        reuseOldTypes(n, old);
     } else {
         n = formToTable(p, old);
         if (!n) return;
@@ -2738,7 +2812,7 @@ function toggleHistoryPanel(force) {
     const open = force === undefined ? !panel.classList.contains('open') : force;
     panel.classList.toggle('open', open);
     document.getElementById('history-btn').classList.toggle('active', open);
-    if (open) renderHistory();
+    if (open) { if (typeof toggleFmtPanel === 'function') toggleFmtPanel(false); renderHistory(); }
 }
 
 function initHistoryUI() {
@@ -2750,10 +2824,73 @@ function initHistoryUI() {
     renderHistory();
 }
 
+
+// ---- Madde 17: Prettify paneli ----
+const FMT_SAMPLE = {
+    name: 'orders',
+    cols: [
+        { name: 'id', type: 'BIGINT UNSIGNED NOT NULL AUTO_INCREMENT', pk: true },
+        { name: 'user_id', type: 'INT NOT NULL', pk: false },
+        { name: 'status', type: "ENUM('pending','paid','shipped','delivered','cancelled','refunded') NOT NULL DEFAULT 'pending'", pk: false },
+        { name: 'note', type: 'VARCHAR(255)', pk: false },
+        { name: 'created_at', type: 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP', pk: false }
+    ],
+    fks: [{ name: 'fk_orders_user_id', columns: ['user_id'], referencesTable: 'users', referencesColumns: ['id'] }]
+};
+function fmtPreviewText() {
+    return formatCreateTable(FMT_SAMPLE.name, FMT_SAMPLE.cols, FMT_SAMPLE.fks, null, ';', fmtOpts());
+}
+function fmtPanelSync() {
+    const o = fmtOpts();
+    document.querySelectorAll('#fmt-panel [data-fmt]').forEach(el => {
+        const k = el.dataset.fmt;
+        el.value = k === 'align' ? (o.align ? '1' : '0') : String(o[k]);
+    });
+    document.querySelector('#fmt-panel .fmt-n').hidden = o.enumMode !== 'every';
+    document.getElementById('fmt-preview').innerHTML = highlightSQL(fmtPreviewText());
+}
+// Açık SQL sekmesini yeni ayarlarla yeniden biçimlendirir (metin geçerliyse; yorumlar kaybolur)
+function refreshOpenSqlTab() {
+    const p = document.getElementById('edit-panel');
+    if (!p || (p.dataset.tab || 'visual') !== 'sql') return;
+    const ta = p.querySelector('.ep-sql');
+    const r = parseTableSQL(ta.value);
+    if (r.error) return;
+    ta.value = tableToSQL(r.table);
+    syncSqlHl(p);
+}
+function toggleFmtPanel(force) {
+    const panel = document.getElementById('fmt-panel');
+    const open = force === undefined ? !panel.classList.contains('open') : force;
+    panel.classList.toggle('open', open);
+    document.getElementById('fmt-btn').classList.toggle('active', open);
+    if (open) { toggleHistoryPanel(false); fmtPanelSync(); }
+}
+function initFmtUI() {
+    const panel = document.getElementById('fmt-panel');
+    document.getElementById('fmt-close').addEventListener('click', () => toggleFmtPanel(false));
+    const onChange = e => {
+        const el = e.target.closest('[data-fmt]');
+        if (!el) return;
+        const o = fmtOpts(), k = el.dataset.fmt;
+        if (k === 'align') o.align = el.value === '1';
+        else if (k === 'width' || k === 'enumN') o[k] = Math.max(k === 'enumN' ? 1 : 0, parseInt(el.value, 10) || FMT_DEFAULTS[k]);
+        else o[k] = el.value;
+        if (k === 'width' && el.value === '0') o.width = 0;
+        setFmtOpts(o);
+        if (k === 'enumN' && e.type === 'input') { document.getElementById('fmt-preview').innerHTML = highlightSQL(fmtPreviewText()); refreshOpenSqlTab(); return; }
+        fmtPanelSync(); refreshOpenSqlTab();
+    };
+    panel.addEventListener('change', onChange);
+    panel.addEventListener('input', e => { if (e.target.type === 'number') onChange(e); });
+    document.getElementById('fmt-reset').addEventListener('click', () => { setFmtOpts({ ...FMT_DEFAULTS }); fmtPanelSync(); refreshOpenSqlTab(); });
+}
+
 // Initialize controls when page loads
 document.addEventListener('DOMContentLoaded', () => {
     initZoomControls();
     initDarkMode();
     initHistoryUI();
+    initFmtUI();
     loadSavedState();
 });

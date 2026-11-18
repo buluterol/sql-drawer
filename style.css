@@ -905,3 +905,16 @@ html {
 /* SQL sekmesi: satır kırma kapalıyken eski yatay kaydırma */
 #edit-panel .ep-sqlwrap.nowrap .ep-hl, #edit-panel .ep-sqlwrap.nowrap .ep-sql { white-space: pre; overflow-wrap: normal; overflow-x: auto; }
 #edit-panel .ep-sqlwrap.nowrap .ep-hl { overflow: hidden; }
+
+/* Madde 17: Prettify ayarları */
+#fmt-panel { position: fixed; top: 20px; bottom: 20px; left: 84px; width: 360px; z-index: 98; display: none; flex-direction: column;
+    background: var(--modal-bg, #fff); color: var(--modal-text, #222); border-radius: 12px; box-shadow: 0 6px 30px rgba(0,0,0,.25); overflow: hidden; }
+#fmt-panel.open { display: flex; }
+#fmt-btn.active i { color: #0d6efd; }
+#fmt-panel .fmt-body { flex: 1; overflow-y: auto; padding: 10px 14px 14px; }
+#fmt-panel label { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 13px; margin: 0 0 8px; }
+#fmt-panel select, #fmt-panel input[type=number] { max-width: 190px; width: 190px; padding: 3px 6px; font-size: 13px; background: var(--column-bg); color: var(--text-color); border: 1px solid var(--column-border); border-radius: 4px; }
+#fmt-panel .fmt-n[hidden] { display: none; }
+#fmt-panel .fmt-hint { font-size: 11.5px; opacity: .65; margin: 4px 0 6px; }
+#fmt-panel .ep-lbl { font-size: 12px; opacity: .7; margin: 8px 0 4px; }
+#fmt-preview { margin: 0 0 10px; padding: 8px 10px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--column-bg); border: 1px solid var(--column-border); border-radius: 6px; overflow-x: auto; white-space: pre; tab-size: 4; }

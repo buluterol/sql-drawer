@@ -28,6 +28,7 @@
 				</div>
 				<div class="tool-sep"></div>
 				<div class="tool-group">
+					<button type="button" class="tool-btn" id="fmt-btn" data-tip="Biçim (Prettify) ayarları" onclick="toggleFmtPanel()"><i class="fa-solid fa-wand-magic-sparkles"></i></button>
 					<button type="button" class="tool-btn" id="json-save-btn" data-tip="Yerleşim + geçmiş: JSON kaydet" onclick="exportStateJSON()"><i class="fa-solid fa-floppy-disk"></i></button>
 					<button type="button" class="tool-btn" id="json-open-btn" data-tip="JSON aç" onclick="document.getElementById('json-file').click()"><i class="fa-solid fa-folder-open"></i></button>
 					<input type="file" id="json-file" accept="application/json,.json" hidden>
@@ -45,6 +46,33 @@
 				</div>
 				<div class="hist-list"></div>
 			</div>
+
+		<div id="fmt-panel">
+			<div class="hist-top">
+				<strong>Biçim (Prettify) ayarları</strong>
+				<button type="button" id="fmt-close" class="hist-x" title="Kapat">&times;</button>
+			</div>
+			<div class="fmt-body">
+				<label>Satır genişliği
+					<select data-fmt="width"><option value="80">80</option><option value="100">100</option><option value="120">120</option><option value="0">Sarma yok</option></select></label>
+				<label>ENUM / SET değerleri
+					<select data-fmt="enumMode"><option value="fit">Genişliğe göre kır</option><option value="single">Tek satır</option><option value="each">Her değer ayrı satır</option><option value="every">N değerde bir kır</option></select></label>
+				<label class="fmt-n">N (değer sayısı)
+					<input type="number" data-fmt="enumN" min="1" max="20" step="1"></label>
+				<label>Hizalama
+					<select data-fmt="align"><option value="0">Kapalı</option><option value="1">Tür ve kısıtları sütun gibi hizala</option></select></label>
+				<label>Girinti
+					<select data-fmt="indent"><option value="2">2 boşluk</option><option value="4">4 boşluk</option><option value="tab">Tab</option></select></label>
+				<label>Anahtar kelimeler
+					<select data-fmt="kw"><option value="upper">BÜYÜK</option><option value="lower">küçük</option><option value="asis">Olduğu gibi</option></select></label>
+				<label>Kısıtlar (PK / FK)
+					<select data-fmt="constraints"><option value="end">Tablo sonunda</option><option value="inline">Sütun tanımının içinde</option></select></label>
+				<div class="fmt-hint">Ayarlar bu tarayıcıda saklanır; SQL sekmesi ve SQL dışa aktarma aynısını kullanır.</div>
+				<div class="ep-lbl">Önizleme</div>
+				<pre id="fmt-preview"></pre>
+				<button type="button" id="fmt-reset" class="btn btn-sm btn-outline-secondary">Varsayılana dön</button>
+			</div>
+		</div>
 
 		<!-- Dark Mode Toggle - Sağ Üst -->
 		<div class="dark-mode-container">
